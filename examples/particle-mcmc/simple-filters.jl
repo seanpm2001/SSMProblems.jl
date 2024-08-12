@@ -27,7 +27,7 @@ function multinomial_resampling(
         weights::AbstractVector{<:Real},
         N::Integer = length(weights)
     )
-    return rand(rng, Categorical(weights), N)
+    return rand(rng, Distributions.Categorical(weights), N)
 end
 
 # TODO: improve particle storage
