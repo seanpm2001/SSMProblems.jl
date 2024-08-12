@@ -14,6 +14,9 @@ end
 rng = MersenneTwister(1234)
 _, data = sample(rng, simulation_model, 150)
 
+# consider a default Gamma prior with Float32s
+prior_dist = product_distribution(Gamma(1f0), Gamma(1f0), Gamma(1f0))
+
 #=
     Not crazy about this structure, especially since the RNG is referenced on
     the global scope. I think we can make a PMCMC sampler type which includes
@@ -26,11 +29,13 @@ _, data = sample(rng, simulation_model, 150)
     states.
 =#
 function density(θ::Vector{T}) where {T<:Real}
-    if all(θ -> θ > 0.0, θ)
+    if insupport(prior_dist, θ)
         dyn = LinearGaussianLatentDynamics(T[1 1;0 1], diagm(θ[1:2]))
         obs = LinearGaussianObservationProcess(T[0.5 0.5], diagm(θ[3:end]))
+        
+        # _, ll = sample(rng, StateSpaceModel(dyn, obs), data, BF(512))
         _, ll = sample(rng, StateSpaceModel(dyn, obs), data, KF())
-        return ll
+        return ll + logpdf(prior_dist, θ)
     else
         return -Inf
     end
@@ -41,7 +46,7 @@ pmmh  = RWMH(MvNormal(zeros(Float32, 3), (0.01f0)*I))
 model = DensityModel(density)
 
 # works with AdvancedMH out of the box
-chains = sample(model, pmmh, 100_000)
+chains = sample(model, pmmh, 25_000)
 burn_in = 10_000
 
 # plot the posteriors
