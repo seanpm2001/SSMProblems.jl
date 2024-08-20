@@ -55,7 +55,7 @@ end
 Resample `particles` in-place
 """
 function resample!(rng::AbstractRNG, weights::AbstractArray, particles::AbstractArray)
-    idx = resample_systematic(rng, weights);
+    idx = resample_systematic(rng, weights)
     num_resamples = zeros(length(idx))
     for i in idx
         num_resamples[i] += 1
@@ -82,9 +82,8 @@ function filter(
     model::StateSpaceModel,
     N::Int,
     observations::AbstractArray{T},
-    threshold::Real=0.5
-) where T <: Real
-
+    threshold::Real=0.5,
+) where {T<:Real}
     gpu_state = Metal.zeros(N; storage=Metal.Shared)
     gpu_logweights = Metal.zeros(N; storage=Metal.Shared)
 
@@ -97,12 +96,14 @@ function filter(
         weights = get_weights(cpu_logweights)
         if ess(weights) <= threshold * N
             resample!(rng, weights, cpu_state)
-            fill!(cpu_logweights, 0.)
+            fill!(cpu_logweights, 0.0)
         end
 
         logZ0 = logZ(cpu_logweights)
         Metal.@sync simulate!(model.dyn, step, gpu_state, nothing)
-        Metal.@sync logdensity!(model.obs, gpu_logweights, step, gpu_state, observation, nothing)
+        Metal.@sync logdensity!(
+            model.obs, gpu_logweights, step, gpu_state, observation, nothing
+        )
         logZ1 = logZ(cpu_logweights)
 
         logevidence += logZ1 - logZ0
@@ -124,37 +125,27 @@ const LinearGaussianSSM{T} = StateSpaceModel{
 };
 
 function SSMProblems.distribution(
-    dyn::LinearGaussianLatentDynamics{T},
-    extra::Nothing
-) where T <: Real
+    dyn::LinearGaussianLatentDynamics{T}, extra::Nothing
+) where {T<:Real}
     return Normal{T}(T(0), dyn.σ)
 end
 
 function SSMProblems.distribution(
-    dyn::LinearGaussianLatentDynamics{T},
-    step::Int,
-    state::Real,
-    extra::Nothing
-) where T <: Real
+    dyn::LinearGaussianLatentDynamics{T}, step::Int, state::Real, extra::Nothing
+) where {T<:Real}
     return Normal{T}(state, dyn.σ)
 end
 
 function SSMProblems.distribution(
-    obs::LinearGaussianObservationProcess{T},
-    step::Int,
-    state::Real,
-    extra::Nothing
-) where T <: Real
+    obs::LinearGaussianObservationProcess{T}, step::Int, state::Real, extra::Nothing
+) where {T<:Real}
     return Normal{T}(state, dyn.σ)
 end
 
 function simulate!(
-    dyn::LinearGaussianLatentDynamics{T},
-    step::Int,
-    state::AbstractArray{T},
-    extra::Nothing
-) where T
-    state .= state .+ dyn.σ * randn!(state)
+    dyn::LinearGaussianLatentDynamics{T}, step::Int, state::AbstractArray{T}, extra::Nothing
+) where {T}
+    return state .= state .+ dyn.σ * randn!(state)
 end
 
 function logdensity!(
@@ -163,9 +154,9 @@ function logdensity!(
     timestep::Int,
     state::AbstractArray{T},
     observation::T,
-    extra::Nothing
-) where T <: Real
-    arr .+= normlogpdf.(state, (obs.σ,), (observation,))
+    extra::Nothing,
+) where {T<:Real}
+    return arr .+= normlogpdf.(state, (obs.σ,), (observation,))
 end
 
 # Simulation / Inference
