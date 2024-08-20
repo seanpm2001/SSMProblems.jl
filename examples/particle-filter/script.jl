@@ -6,70 +6,111 @@ using SSMProblems
 using Distributions
 using Plots
 using StatsFuns
+using Metal
 
-# Particle Filter 
+# Filter
 ess(weights) = inv(sum(abs2, weights))
 get_weights(logweights::T) where {T<:AbstractVector{<:Real}} = StatsFuns.softmax(logweights)
+logZ(arr::AbstractArray) = StatsFuns.logsumexp(arr)
 
-function systematic_resampling(
-    rng::AbstractRNG, weights::AbstractVector{<:Real}, n::Integer=length(weights)
+function resample_systematic(
+    rng::Random.AbstractRNG, weights::AbstractVector{<:Real}, n::Integer=length(weights)
 )
-    return rand(rng, Distributions.Categorical(weights), n)
+    # check input
+    m = length(weights)
+    m > 0 || error("weight vector is empty")
+
+    # pre-calculations
+    @inbounds v = n * weights[1]
+    u = oftype(v, rand(rng))
+
+    # find all samples
+    samples = Array{Int64}(undef, n)
+    sample = 1
+    @inbounds for i in 1:n
+        # as long as we have not found the next sample
+        while v < u
+            # increase and check the sample
+            sample += 1
+            sample > m &&
+                error("sample could not be selected (are the weights normalized?)")
+
+            # update the cumulative sum of weights (scaled by `n`)
+            v += n * weights[sample]
+        end
+
+        # save the next sample
+        samples[i] = sample
+
+        # update `u`
+        u += one(u)
+    end
+
+    return samples
 end
 
-function sweep!(
-    rng::AbstractRNG,
-    model::AbstractStateSpaceModel,
-    particles,
-    observations::AbstractArray,
-    resampling=systematic_resampling,
-    threshold=0.5,
-)
-    N = length(particles[:, 1])
-    logweights = zeros(N)
+"""
+        resample(rng::AbstractRNG, weights::AbstractArray, particles::AbstractArray)
 
-    for (timestep, observation) in enumerate(observations)
-        weights = get_weights(logweights)
+Resample `particles` in-place
+"""
+function resample!(rng::AbstractRNG, weights::AbstractArray, particles::AbstractArray)
+    idx = resample_systematic(rng, weights);
+    num_resamples = zeros(length(idx))
+    for i in idx
+        num_resamples[i] += 1
+    end
+    removed = findall(num_resamples .== 0)
+
+    for (i, num_children) in enumerate(num_resamples)
+        if num_children > 1
+            for _ in 2:num_children
+                j = popfirst!(removed)
+                particles[j] = particles[i]
+            end
+        end
+    end
+end
+
+"""
+        filter(rng::AbstractRNG, model::StateSpaceModel, N::Int, observations::AbstractArray, threshold::Real)
+
+Estimate log-evidence using `N` particles. Resample particles when ESS falls below `N * threshold`.
+"""
+function filter(
+    rng::AbstractRNG,
+    model::StateSpaceModel,
+    N::Int,
+    observations::AbstractArray{T},
+    threshold::Real=0.5
+) where T <: Real
+
+    gpu_state = Metal.zeros(N; storage=Metal.Shared)
+    gpu_logweights = Metal.zeros(N; storage=Metal.Shared)
+
+    # Use unified memory option to avoid moving states and weights back and forth from the GPU
+    cpu_state = unsafe_wrap(Array{Float32}, gpu_state, size(gpu_state))
+    cpu_logweights = unsafe_wrap(Array{Float32}, gpu_logweights, size(gpu_logweights))
+
+    logevidence = 0
+    for (step, observation) in enumerate(observations)
+        weights = get_weights(cpu_logweights)
         if ess(weights) <= threshold * N
-            idx = resampling(rng, weights)
-            particles = particles[idx, timestep]
-            fill!(logweights, 0)
+            resample!(rng, weights, cpu_state)
+            fill!(cpu_logweights, 0.)
         end
 
-        latent_state = zeros(N)
-        for i in eachindex(particles[:, timestep])
-            latent_state[i]= SSMProblems.simulate(rng, model.dyn, timestep, particles[i, timestep], nothing)
-            logweights[i] += SSMProblems.logdensity(
-                model.obs, timestep, particles[i, timestep], observation, nothing
-            )
-        end
-        particles[:, timestep] = latent_state
-    end
+        logZ0 = logZ(cpu_logweights)
+        Metal.@sync simulate!(model.dyn, step, gpu_state, nothing)
+        Metal.@sync logdensity!(model.obs, gpu_logweights, step, gpu_state, observation, nothing)
+        logZ1 = logZ(cpu_logweights)
 
-    idx = resampling(rng, get_weights(logweights))
-    return particles[idx, end]
+        logevidence += logZ1 - logZ0
+    end
+    return logevidence
 end
 
-# Turing style sample method
-function StatsBase.sample(
-    rng::AbstractRNG,
-    model::AbstractStateSpaceModel,
-    n::Int,
-    observations::AbstractVector;
-    resampling=systematic_resampling,
-    threshold=0.5,
-)
-    T = length(observations)
-    particles = zeros(Float64, n, T)
-    vec = map(1:N) do i
-        state = SSMProblems.simulate(rng, model.dyn, nothing)
-    end
-    particles[:, 1] = collect(vec)
-    samples = sweep!(rng, model, particles, observations, resampling, threshold)
-    return particles
-end
-
-# Inference code
+# Model definition
 struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics
     σ::T
 end
@@ -82,34 +123,62 @@ const LinearGaussianSSM{T} = StateSpaceModel{
     <:LinearGaussianLatentDynamics{T},<:LinearGaussianObservationProcess{T}
 };
 
-function SSMProblems.distribution(dyn::LinearGaussianLatentDynamics, extra::Nothing)
-    return Normal(0, dyn.σ)
+function SSMProblems.distribution(
+    dyn::LinearGaussianLatentDynamics{T},
+    extra::Nothing
+) where T <: Real
+    return Normal{T}(T(0), dyn.σ)
 end
 
-function SSMProblems.distribution(dyn::LinearGaussianLatentDynamics, step::Int, state::Real, extra::Nothing)
-    return Normal(state, dyn.σ)
+function SSMProblems.distribution(
+    dyn::LinearGaussianLatentDynamics{T},
+    step::Int,
+    state::Real,
+    extra::Nothing
+) where T <: Real
+    return Normal{T}(state, dyn.σ)
 end
 
-function SSMProblems.distribution(obs::LinearGaussianObservationProcess, step::Int, state::Real, extra::Nothing)
-    return Normal(state, dyn.σ)
+function SSMProblems.distribution(
+    obs::LinearGaussianObservationProcess{T},
+    step::Int,
+    state::Real,
+    extra::Nothing
+) where T <: Real
+    return Normal{T}(state, dyn.σ)
 end
 
+function simulate!(
+    dyn::LinearGaussianLatentDynamics{T},
+    step::Int,
+    state::AbstractArray{T},
+    extra::Nothing
+) where T
+    state .= state .+ dyn.σ * randn!(state)
+end
 
-# Simulation
-T = 150
+function logdensity!(
+    obs::LinearGaussianObservationProcess{T},
+    arr::AbstractArray{T},
+    timestep::Int,
+    state::AbstractArray{T},
+    observation::T,
+    extra::Nothing
+) where T <: Real
+    arr .+= normlogpdf.(state, (obs.σ,), (observation,))
+end
+
+# Simulation / Inference
+Tn = 100
 seed = 1
-N = 500
+N = 1_000
 rng = MersenneTwister(seed)
 
-dyn = LinearGaussianLatentDynamics(0.2)
-obs = LinearGaussianObservationProcess(0.7)
+# Float32 required for GPU but leads to numerical instability in the resampling algorithm
+T = Float32
+dyn = LinearGaussianLatentDynamics{T}(T(0.2))
+obs = LinearGaussianObservationProcess{T}(T(0.7))
 model = StateSpaceModel(dyn, obs)
-xs, ys = sample(rng, model, T)
+xs, ys = sample(rng, model, Tn)
 
-particles = sample(rng, model, N, ys)
-
-plot(xs; label="True state", linewidth=2)
-plot(ys; label="True state", linewidth=2)
-gui()
-
-a = 1
+logevidence = filter(rng, model, N, ys)
