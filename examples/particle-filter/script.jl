@@ -13,41 +13,22 @@ ess(weights) = inv(sum(abs2, weights))
 get_weights(logweights::T) where {T<:AbstractVector{<:Real}} = StatsFuns.softmax(logweights)
 logZ(arr::AbstractArray) = StatsFuns.logsumexp(arr)
 
-function resample_systematic(
-    rng::Random.AbstractRNG, weights::AbstractVector{<:Real}, n::Integer=length(weights)
-)
-    # check input
-    m = length(weights)
-    m > 0 || error("weight vector is empty")
 
-    # pre-calculations
-    @inbounds v = n * weights[1]
-    u = oftype(v, rand(rng))
-
-    # find all samples
-    samples = Array{Int64}(undef, n)
-    sample = 1
-    @inbounds for i in 1:n
-        # as long as we have not found the next sample
-        while v < u
-            # increase and check the sample
-            sample += 1
-            sample > m &&
-                error("sample could not be selected (are the weights normalized?)")
-
-            # update the cumulative sum of weights (scaled by `n`)
-            v += n * weights[sample]
+function rejection_resampling(rng::AbstractRNG, weights::AbstractArray{T}, n::Int=length(weights)) where {T<:Real}
+    w_max = maximum(weights) # Inefficient
+    a = zeros(Int, n)
+    for i in 1:n
+        j = i
+        u = rand(rng)
+        while log(u) > log(weights[j]) - log(w_max)
+            j = rand(rng, 1:n)
+            u = rand(rng)
         end
-
-        # save the next sample
-        samples[i] = sample
-
-        # update `u`
-        u += one(u)
+        a[i] = j
     end
-
-    return samples
+    return a
 end
+
 
 """
         resample(rng::AbstractRNG, weights::AbstractArray, particles::AbstractArray)
@@ -55,7 +36,7 @@ end
 Resample `particles` in-place
 """
 function resample!(rng::AbstractRNG, weights::AbstractArray, particles::AbstractArray)
-    idx = resample_systematic(rng, weights)
+    idx = rejection_resampling(rng, weights)
     num_resamples = zeros(length(idx))
     for i in idx
         num_resamples[i] += 1
@@ -71,6 +52,7 @@ function resample!(rng::AbstractRNG, weights::AbstractArray, particles::Abstract
         end
     end
 end
+
 
 """
         filter(rng::AbstractRNG, model::StateSpaceModel, N::Int, observations::AbstractArray, threshold::Real)
@@ -93,6 +75,7 @@ function filter(
 
     logevidence = 0
     for (step, observation) in enumerate(observations)
+        #println(step)
         weights = get_weights(cpu_logweights)
         if ess(weights) <= threshold * N
             resample!(rng, weights, cpu_state)
@@ -145,7 +128,7 @@ end
 function simulate!(
     dyn::LinearGaussianLatentDynamics{T}, step::Int, state::AbstractArray{T}, extra::Nothing
 ) where {T}
-    return state .= state .+ dyn.σ * randn!(state)
+    return state .= state .+ dyn.σ * Metal.randn(size(state)...)
 end
 
 function logdensity!(
@@ -160,12 +143,15 @@ function logdensity!(
 end
 
 # Simulation / Inference
-Tn = 100
+Tn = 10
 seed = 1
-N = 1_000
+N = 500_000
 rng = MersenneTwister(seed)
 
 # Float32 required for GPU but leads to numerical instability in the resampling algorithm
+# See https://www.sciencedirect.com/science/article/abs/pii/S0167819122000837
+# for example of numerical instability with single precision
+# For a numerically stable version of resampling algos https://arxiv.org/pdf/1301.4019
 T = Float32
 dyn = LinearGaussianLatentDynamics{T}(T(0.2))
 obs = LinearGaussianObservationProcess{T}(T(0.7))
@@ -173,3 +159,4 @@ model = StateSpaceModel(dyn, obs)
 xs, ys = sample(rng, model, Tn)
 
 logevidence = filter(rng, model, N, ys)
+println(logevidence)
