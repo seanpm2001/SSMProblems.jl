@@ -11,7 +11,7 @@ import AbstractMCMC: sample, AbstractSampler
 ## UTILITIES ##################################################################
 
 # GaussianDistributions.correct will error when type casting otherwise
-function Base.convert(::Type{PDMat{T, MT}}, mat::MT) where {MT<:AbstractMatrix, T<:Real}
+function Base.convert(::Type{PDMat{T,MT}}, mat::MT) where {MT<:AbstractMatrix,T<:Real}
     return PDMat(Symmetric(mat))
 end
 
@@ -31,7 +31,7 @@ function multinomial_resampling(
 end
 
 # TODO: improve particle storage
-struct ParticleContainer{T, WT<:Real}
+struct ParticleContainer{T,WT<:Real}
     vals::Vector{T}
     log_weights::Vector{WT}
 end
@@ -54,7 +54,7 @@ struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics{T}
     """
     A::Matrix{T}
     b::Vector{T}
-    Q::PDMat{T, Matrix{T}}
+    Q::PDMat{T,Matrix{T}}
 end
 
 # Convert covariance matrices to PDMats to avoid recomputing Cholesky factorizations
@@ -73,7 +73,7 @@ struct LinearGaussianObservationProcess{T<:Real} <: ObservationProcess{T}
         y[t] = Hx[t] + η[t],        η[t] ∼ N(0, R)
     """
     H::Matrix{T}
-    R::PDMat{T, Matrix{T}}
+    R::PDMat{T,Matrix{T}}
 end
 
 function LinearGaussianObservationProcess(H::Matrix, R::Matrix)
@@ -118,7 +118,7 @@ end
 
 function PSDMat(mat::AbstractMatrix)
     # this deals with rank definicient positive semi-definite matrices
-    chol_mat = cholesky(mat, Val(true), check=false)
+    chol_mat = cholesky(mat, Val(true); check=false)
     Up = UpperTriangular(chol_mat.U[:, invperm(chol_mat.p)])
     return PDMat(mat, Cholesky(Up))
 end
@@ -207,7 +207,7 @@ function predict(
     @unpack A, b, Q = model.dyn
 
     predicted_particles = let μ = particles.μ, Σ = particles.Σ
-        Gaussian(A*μ + b, A*Σ*A' + Q)
+        Gaussian(A * μ + b, A * Σ * A' + Q)
     end
 
     return predicted_particles

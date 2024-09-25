@@ -5,7 +5,7 @@ include("simple-filters.jl")
 
 true_params, simulation_model = let T = Float32
     θ = randexp(T, 3)
-    dyn = LinearGaussianLatentDynamics(T[1 1;0 1], diagm(θ[1:2]))
+    dyn = LinearGaussianLatentDynamics(T[1 1; 0 1], diagm(θ[1:2]))
     obs = LinearGaussianObservationProcess(T[0.5 0.5], diagm(θ[3:end]))
     θ, StateSpaceModel(dyn, obs)
 end
@@ -15,7 +15,7 @@ rng = MersenneTwister(1234)
 _, _, data = sample(rng, simulation_model, 150)
 
 # consider a default Gamma prior with Float32s
-prior_dist = product_distribution(Gamma(1f0), Gamma(1f0), Gamma(1f0))
+prior_dist = product_distribution(Gamma(1.0f0), Gamma(1.0f0), Gamma(1.0f0))
 
 # test the adaptive resampling procedure
 sample(rng, simulation_model, data, BF(512, 0.1); debug=true);
@@ -34,7 +34,7 @@ sample(rng, simulation_model, data, BF(512, 0.1); debug=true);
 =#
 function density(θ::Vector{T}) where {T<:Real}
     if insupport(prior_dist, θ)
-        dyn = LinearGaussianLatentDynamics(T[1 1;0 1], diagm(θ[1:2]))
+        dyn = LinearGaussianLatentDynamics(T[1 1; 0 1], diagm(θ[1:2]))
         obs = LinearGaussianObservationProcess(T[0.5 0.5], diagm(θ[3:end]))
         
         # _, ll = sample(rng, StateSpaceModel(dyn, obs), data, BF(512))
@@ -46,7 +46,7 @@ function density(θ::Vector{T}) where {T<:Real}
 end
 
 # plug it into the DensityModel interface for now
-pmmh  = RWMH(MvNormal(zeros(Float32, 3), (0.01f0)*I))
+pmmh = RWMH(MvNormal(zeros(Float32, 3), (0.01f0) * I))
 model = DensityModel(density)
 
 # works with AdvancedMH out of the box
@@ -56,26 +56,14 @@ burn_in = 1_000
 # plot the posteriors
 hist_plots = begin
     param_post = hcat(getproperty.(chains[burn_in:end], :params)...)
-    fig = Figure(size = (1200, 400))
+    fig = Figure(; size=(1200, 400))
 
     for i in 1:3
         # plot the posteriors with burn-in
-        hist(
-            fig[1, i],
-            param_post[i, :],
-            color = :gray,
-            strokewidth = 1,
-            normalization = :pdf
-        )
+        hist(fig[1, i], param_post[i, :]; color=:gray, strokewidth=1, normalization=:pdf)
 
         # plot the true values
-        vlines!(
-            fig[1, i],
-            true_params[i],
-            color = :red,
-            linestyle = :dash,
-            linewidth = 2
-        )
+        vlines!(fig[1, i], true_params[i]; color=:red, linestyle=:dash, linewidth=2)
     end
 
     fig
