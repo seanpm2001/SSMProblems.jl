@@ -11,7 +11,7 @@ import AbstractMCMC: sample, AbstractSampler
 ## UTILITIES ##################################################################
 
 # GaussianDistributions.correct will error when type casting otherwise
-function Base.convert(::Type{PDMat{T, MT}}, mat::MT) where {MT<:AbstractMatrix, T<:Real}
+function Base.convert(::Type{PDMat{T,MT}}, mat::MT) where {MT<:AbstractMatrix,T<:Real}
     return PDMat(Symmetric(mat))
 end
 
@@ -31,7 +31,7 @@ function multinomial_resampling(
 end
 
 # TODO: improve particle storage
-struct ParticleContainer{T, WT<:Real}
+struct ParticleContainer{T,WT<:Real}
     vals::Vector{T}
     log_weights::Vector{WT}
 end
@@ -46,33 +46,38 @@ Base.setindex!(pc::ParticleContainer{T}, p::T, i::Int) where T = Base.setindex!(
 
 ## LINEAR GAUSSIAN STATE SPACE MODEL ##########################################
 
-struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics
+struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics{T}
     """
         Latent dynamics for a linear Gaussian state space model.
         The model is defined by the following equations:
-        x[t] = Ax[t-1] + ε[t],      ε[t] ∼ N(0, Q)
+        x[t] = Ax[t-1] + b + ε[t],      ε[t] ∼ N(0, Q)
     """
     A::Matrix{T}
-    Q::PDMat{T, Matrix{T}}
+    b::Vector{T}
+    Q::PDMat{T,Matrix{T}}
 end
 
 # Convert covariance matrices to PDMats to avoid recomputing Cholesky factorizations
-function LinearGaussianLatentDynamics(A::Matrix, Q::Matrix)
-    return LinearGaussianLatentDynamics(A, PDMat(Q))
+function LinearGaussianLatentDynamics(A::Matrix, b::Vector, Q::Matrix)
+    return LinearGaussianLatentDynamics(A, b, PSDMat(Q))
 end
 
-struct LinearGaussianObservationProcess{T<:Real} <: ObservationProcess
+function LinearGaussianLatentDynamics(A::Matrix{T}, Q::Matrix{T}) where {T<:Real}
+    return LinearGaussianLatentDynamics(A, zeros(T, size(A, 1)), PSDMat(Q))
+end
+
+struct LinearGaussianObservationProcess{T<:Real} <: ObservationProcess{T}
     """
         Observation process for a linear Gaussian state space model.
         The model is defined by the following equation:
         y[t] = Hx[t] + η[t],        η[t] ∼ N(0, R)
     """
     H::Matrix{T}
-    R::PDMat{T, Matrix{T}}
+    R::PDMat{T,Matrix{T}}
 end
 
-function LinearGaussianObservationProcess(B::Matrix, R::Matrix)
-    return LinearGaussianObservationProcess(B, PDMat(R))
+function LinearGaussianObservationProcess(H::Matrix, R::Matrix)
+    return LinearGaussianObservationProcess(H, PSDMat(R))
 end
 
 function SSMProblems.distribution(
@@ -89,7 +94,7 @@ function SSMProblems.distribution(
         state::AbstractVector{T},
         extra
     ) where {T<:Real}
-    return MvNormal(proc.A*state, proc.Q)
+    return MvNormal(proc.A*state + proc.b, proc.Q)
 end
 
 function SSMProblems.distribution(
@@ -101,13 +106,22 @@ function SSMProblems.distribution(
     return MvNormal(proc.H*state, proc.R)
 end
 
-const LinearGaussianModel{T<:Real} = StateSpaceModel{
-    LinearGaussianLatentDynamics{T},
-    LinearGaussianObservationProcess{T}
+const LinearGaussianModel{T} = StateSpaceModel{D, O} where {
+    T,
+    D <: LinearGaussianLatentDynamics{T},
+    O <: LinearGaussianObservationProcess{T}
 }
 
-Base.eltype(::LinearGaussianModel{T}) where T = T
-Base.eltype(::StateSpaceModel) = error("model element type must be explicit")
+Base.eltype(model::LinearGaussianModel) = begin
+    (Vector{eltype(model.dyn)}, Vector{eltype(model.obs)})
+end
+
+function PSDMat(mat::AbstractMatrix)
+    # this deals with rank definicient positive semi-definite matrices
+    chol_mat = cholesky(mat, Val(true); check=false)
+    Up = UpperTriangular(chol_mat.U[:, invperm(chol_mat.p)])
+    return PDMat(mat, Cholesky(Up))
+end
 
 ## FILTERING ##################################################################
 
@@ -138,16 +152,18 @@ function sample(
         rng::AbstractRNG,
         model::StateSpaceModel,
         observations::AbstractVector,
-        filter::AbstractFilter
+        filter::AbstractFilter;
+        callback = nothing,
+        kwargs...
     )
-    MT = eltype(model)
-    
+    MT = eltype(model.dyn)
+
     filtered_states = prior(rng, model, filter, nothing)
     log_evidence = zero(MT)
 
     for t in eachindex(observations)
         proposed_states = predict(
-            rng, filtered_states, model, filter, t, nothing
+            rng, filtered_states, model, filter, t, nothing; kwargs...
         )
 
         filtered_states, log_marginal = update(
@@ -155,6 +171,10 @@ function sample(
         )
 
         log_evidence += log_marginal
+
+        callback === nothing || callback(
+            rng, model, observations, filtered_states, t; kwargs...
+        )
     end
 
     return filtered_states, log_evidence
@@ -184,10 +204,10 @@ function predict(
         step::Integer,
         extra
     )
-    @unpack A, Q = model.dyn
+    @unpack A, b, Q = model.dyn
 
     predicted_particles = let μ = particles.μ, Σ = particles.Σ
-        Gaussian(A*μ, A*Σ*A' + Q)
+        Gaussian(A * μ + b, A * Σ * A' + Q)
     end
 
     return predicted_particles
@@ -218,13 +238,13 @@ end
 
 ## BOOTSTRAP FILTER ###########################################################
 
-# TODO: adaptive resampling, set by default to always resmaple
+# TODO: fix the adaptive resampling
 struct BootstrapFilter <: AbstractFilter
     N::Int64
     threshold::Float64
 end
 
-BF(N::Integer) = BootstrapFilter(N, 1.0)
+BF(N::Integer, rs::Float64=1.0) = BootstrapFilter(N, rs)
 
 resample_threshold(filter::BootstrapFilter) = filter.threshold*filter.N
 
@@ -240,7 +260,7 @@ function prior(
         1:filter.N
     )
 
-    return ParticleContainer(initial_states, zeros(eltype(model), filter.N))
+    return ParticleContainer(initial_states, zeros(eltype(model.dyn), filter.N))
 end
 
 function predict(
@@ -249,10 +269,22 @@ function predict(
         model::StateSpaceModel,
         filter::BootstrapFilter,
         step::Integer,
-        extra
+        extra;
+        debug::Bool = false
     )
     weights = softmax(particles.log_weights)
-    idx = multinomial_resampling(rng, weights)
+    ess = inv(sum(abs2, weights))
+
+    # for debugging purposes
+    debug && print("\n$ess")
+
+    # adaptive resampling
+    if resample_threshold(filter) ≥ ess
+        idx = multinomial_resampling(rng, weights)
+        fill!(particles.log_weights, zero(ess))
+    else
+        idx = collect(1:filter.N)
+    end
 
     proposed_states = map(
         x -> SSMProblems.simulate(rng, model.dyn, step, x, extra),
@@ -275,8 +307,9 @@ function update(
         collect(particles)
     )
 
+    # if threshold is set below 1.0, the log evidence is not correct
     return (
-        ParticleContainer(particles.vals, log_marginals),
-        logsumexp(log_marginals) - convert(eltype(model), log(filter.N))
+        ParticleContainer(particles.vals, particles.log_weights+log_marginals),
+        logsumexp(log_marginals) - logsumexp(particles.log_weights)
     )
 end
