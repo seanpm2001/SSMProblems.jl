@@ -12,10 +12,14 @@ end
 
 # simulate data
 rng = MersenneTwister(1234)
-_, data = sample(rng, simulation_model, 150)
+_, _, data = sample(rng, simulation_model, 150)
 
 # consider a default Gamma prior with Float32s
 prior_dist = product_distribution(Gamma(1f0), Gamma(1f0), Gamma(1f0))
+
+# test the adaptive resampling procedure
+sample(rng, simulation_model, data, BF(512, 0.1); debug=true);
+
 
 #=
     Not crazy about this structure, especially since the RNG is referenced on
@@ -46,8 +50,8 @@ pmmh  = RWMH(MvNormal(zeros(Float32, 3), (0.01f0)*I))
 model = DensityModel(density)
 
 # works with AdvancedMH out of the box
-chains = sample(model, pmmh, 25_000)
-burn_in = 10_000
+chains = sample(model, pmmh, 10_000)
+burn_in = 1_000
 
 # plot the posteriors
 hist_plots = begin
