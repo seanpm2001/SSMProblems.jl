@@ -3,10 +3,14 @@
 import AbstractMCMC: sample
 export sample
 
-function sample(rng::AbstractRNG, model::StateSpaceModel, extra0, extras::AbstractVector)
+function sample(
+    rng::AbstractRNG, model::StateSpaceModel{<:Real,LD,OP}, extra0, extras::AbstractVector
+) where {LD,OP}
     T = length(extras)
 
-    T_dyn, T_obs = eltype(model)
+    T_dyn = eltype(LD)
+    T_obs = eltype(OP)
+    
     xs = Vector{T_dyn}(undef, T)
     ys = Vector{T_obs}(undef, T)
 

@@ -19,14 +19,14 @@ end
 function Distributions.logpdf(P::Gaussian, x)
     dP = length(P.μ)
     logdetcov = GaussianDistributions._logdet(P.Σ, dP)
-    return -(GaussianDistributions.sqmahal(P,x) + logdetcov + dP*convert(eltype(x), log2π))/2
+    return -(
+        GaussianDistributions.sqmahal(P, x) + logdetcov + dP * convert(eltype(x), log2π)
+    ) / 2
 end
 
 function multinomial_resampling(
-        rng::AbstractRNG,
-        weights::AbstractVector{<:Real},
-        N::Integer = length(weights)
-    )
+    rng::AbstractRNG, weights::AbstractVector{<:Real}, N::Integer=length(weights)
+)
     return rand(rng, Distributions.Categorical(weights), N)
 end
 
@@ -42,11 +42,13 @@ Base.keys(pc::ParticleContainer) = LinearIndices(pc.vals)
 
 Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Int) = pc.vals[i]
 Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Vector{Int}) = pc.vals[i]
-Base.setindex!(pc::ParticleContainer{T}, p::T, i::Int) where T = Base.setindex!(pc.vals, p, i)
+function Base.setindex!(pc::ParticleContainer{T}, p::T, i::Int) where {T}
+    return Base.setindex!(pc.vals, p, i)
+end
 
 ## LINEAR GAUSSIAN STATE SPACE MODEL ##########################################
 
-struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics{T}
+struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics{Vector{T}}
     """
         Latent dynamics for a linear Gaussian state space model.
         The model is defined by the following equations:
@@ -55,18 +57,22 @@ struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics{T}
     A::Matrix{T}
     b::Vector{T}
     Q::PDMat{T,Matrix{T}}
+
+    init::Gaussian{Vector{T},PDMat{T,Matrix{T}}}
 end
 
 # Convert covariance matrices to PDMats to avoid recomputing Cholesky factorizations
-function LinearGaussianLatentDynamics(A::Matrix, b::Vector, Q::Matrix)
-    return LinearGaussianLatentDynamics(A, b, PSDMat(Q))
+function LinearGaussianLatentDynamics(A::Matrix, b::Vector, Q::Matrix, init::Gaussian)
+    return LinearGaussianLatentDynamics(A, b, PSDMat(Q), init)
 end
 
-function LinearGaussianLatentDynamics(A::Matrix{T}, Q::Matrix{T}) where {T<:Real}
-    return LinearGaussianLatentDynamics(A, zeros(T, size(A, 1)), PSDMat(Q))
+function LinearGaussianLatentDynamics(
+    A::Matrix{T}, Q::Matrix{T}, init::Gaussian
+) where {T<:Real}
+    return LinearGaussianLatentDynamics(A, zeros(T, size(A, 1)), PSDMat(Q), init)
 end
 
-struct LinearGaussianObservationProcess{T<:Real} <: ObservationProcess{T}
+struct LinearGaussianObservationProcess{T<:Real} <: ObservationProcess{Vector{T}}
     """
         Observation process for a linear Gaussian state space model.
         The model is defined by the following equation:
@@ -81,40 +87,27 @@ function LinearGaussianObservationProcess(H::Matrix, R::Matrix)
 end
 
 function SSMProblems.distribution(
-        proc::LinearGaussianLatentDynamics{T},
-        extra
-    ) where {T<:Real}
-        dx = size(proc.A, 1)
-    return MvNormal(zeros(T, dx), diagm(ones(T, dx)))
+    proc::LinearGaussianLatentDynamics{T}, extra
+) where {T<:Real}
+    dx = size(proc.A, 1)
+    return MvNormal(proc.init.μ, proc.init.Σ)
 end
 
 function SSMProblems.distribution(
-        proc::LinearGaussianLatentDynamics{T},
-        step::Int,
-        state::AbstractVector{T},
-        extra
-    ) where {T<:Real}
-    return MvNormal(proc.A*state + proc.b, proc.Q)
+    proc::LinearGaussianLatentDynamics{T}, step::Int, state::AbstractVector{T}, extra
+) where {T<:Real}
+    return MvNormal(proc.A * state + proc.b, proc.Q)
 end
 
 function SSMProblems.distribution(
-        proc::LinearGaussianObservationProcess{T},
-        step::Int,
-        state::AbstractVector{T},
-        extra
-    ) where {T<:Real}
-    return MvNormal(proc.H*state, proc.R)
+    proc::LinearGaussianObservationProcess{T}, step::Int, state::AbstractVector{T}, extra
+) where {T<:Real}
+    return MvNormal(proc.H * state, proc.R)
 end
 
-const LinearGaussianModel{T} = StateSpaceModel{D, O} where {
-    T,
-    D <: LinearGaussianLatentDynamics{T},
-    O <: LinearGaussianObservationProcess{T}
-}
-
-Base.eltype(model::LinearGaussianModel) = begin
-    (Vector{eltype(model.dyn)}, Vector{eltype(model.obs)})
-end
+const LinearGaussianModel{T} = StateSpaceModel{
+    T,D,O
+} where {T,D<:LinearGaussianLatentDynamics{T},O<:LinearGaussianObservationProcess{T}}
 
 function PSDMat(mat::AbstractMatrix)
     # this deals with rank definicient positive semi-definite matrices
@@ -142,24 +135,22 @@ update beliefs on the propagated states.
 function update end
 
 """
-    prior([rng,] model, alg, [extra])
+    initialise([rng,] model, alg, [extra])
 
 propose an initial state distribution.
 """
-function prior end
+function initialise end
 
 function sample(
-        rng::AbstractRNG,
-        model::StateSpaceModel,
-        observations::AbstractVector,
-        filter::AbstractFilter;
-        callback = nothing,
-        kwargs...
-    )
-    MT = eltype(model.dyn)
-
-    filtered_states = prior(rng, model, filter, nothing)
-    log_evidence = zero(MT)
+    rng::AbstractRNG,
+    model::StateSpaceModel,
+    observations::AbstractVector,
+    filter::AbstractFilter;
+    callback=nothing,
+    kwargs...,
+)
+    filtered_states = initialise(rng, model, filter, nothing)
+    log_evidence = zero(eltype(model))
 
     for t in eachindex(observations)
         proposed_states = predict(
@@ -172,9 +163,8 @@ function sample(
 
         log_evidence += log_marginal
 
-        callback === nothing || callback(
-            rng, model, observations, filtered_states, t; kwargs...
-        )
+        callback === nothing ||
+            callback(rng, model, observations, filtered_states, t; kwargs...)
     end
 
     return filtered_states, log_evidence
@@ -186,24 +176,21 @@ struct KalmanFilter <: AbstractFilter end
 
 KF() = KalmanFilter()
 
-function prior(
-        rng::AbstractRNG,
-        model::LinearGaussianModel,
-        filter::KalmanFilter,
-        extras
-    )
+function initialise(
+    rng::AbstractRNG, model::LinearGaussianModel, filter::KalmanFilter, extras
+)
     init_dist = SSMProblems.distribution(model.dyn, extras)
     return Gaussian(init_dist.μ, Matrix(init_dist.Σ))
 end
 
 function predict(
-        rng::AbstractRNG,
-        particles::Gaussian,
-        model::LinearGaussianModel,
-        filter::KalmanFilter,
-        step::Integer,
-        extra
-    )
+    rng::AbstractRNG,
+    particles::Gaussian,
+    model::LinearGaussianModel,
+    filter::KalmanFilter,
+    step::Integer,
+    extra,
+)
     @unpack A, b, Q = model.dyn
 
     predicted_particles = let μ = particles.μ, Σ = particles.Σ
@@ -214,24 +201,20 @@ function predict(
 end
 
 function update(
-        proposed_particles::Gaussian,
-        model::LinearGaussianModel,
-        observation,
-        filter::KalmanFilter,
-        step::Integer,
-        extra
-    )
+    proposed_particles::Gaussian,
+    model::LinearGaussianModel,
+    observation,
+    filter::KalmanFilter,
+    step::Integer,
+    extra,
+)
     @unpack H, R = model.obs
 
     particles, residual, S = GaussianDistributions.correct(
-        proposed_particles,
-        Gaussian(observation, R), H
+        proposed_particles, Gaussian(observation, R), H
     )
 
-    log_marginal = logpdf(
-        Gaussian(zero(residual), Symmetric(S)),
-        residual
-    )
+    log_marginal = logpdf(Gaussian(zero(residual), Symmetric(S)), residual)
 
     return particles, log_marginal
 end
@@ -239,77 +222,68 @@ end
 ## BOOTSTRAP FILTER ###########################################################
 
 # TODO: fix the adaptive resampling
-struct BootstrapFilter <: AbstractFilter
-    N::Int64
-    threshold::Float64
+struct BootstrapFilter{T<:Real} <: AbstractFilter
+    N::Int
+    threshold::T
 end
 
-BF(N::Integer, rs::Float64=1.0) = BootstrapFilter(N, rs)
+BF(N::Integer, rs::Real=1.0) = BootstrapFilter(N, rs)
 
-resample_threshold(filter::BootstrapFilter) = filter.threshold*filter.N
+resample_threshold(filter::BootstrapFilter) = filter.threshold * filter.N
 
-function prior(
-        rng::AbstractRNG,
-        model::StateSpaceModel,
-        filter::BootstrapFilter,
-        extra
-    )
+function initialise(
+    rng::AbstractRNG, model::StateSpaceModel, filter::BootstrapFilter, extra
+)
     init_dist = SSMProblems.distribution(model.dyn, extra)
-    initial_states = map(
-        x -> rand(rng, init_dist),
-        1:filter.N
-    )
+    initial_states = map(x -> rand(rng, init_dist), 1:(filter.N))
 
-    return ParticleContainer(initial_states, zeros(eltype(model.dyn), filter.N))
+    return ParticleContainer(initial_states, zeros(eltype(model), filter.N))
 end
 
 function predict(
-        rng::AbstractRNG,
-        particles::ParticleContainer,
-        model::StateSpaceModel,
-        filter::BootstrapFilter,
-        step::Integer,
-        extra;
-        debug::Bool = false
-    )
+    rng::AbstractRNG,
+    particles::ParticleContainer,
+    model::StateSpaceModel,
+    filter::BootstrapFilter,
+    step::Integer,
+    extra;
+    debug::Bool=false,
+)
     weights = softmax(particles.log_weights)
     ess = inv(sum(abs2, weights))
 
-    # for debugging purposes
-    debug && print("\n$ess")
+    debug && println("t: $step \tESS: $ess")
 
-    # adaptive resampling
     if resample_threshold(filter) ≥ ess
         idx = multinomial_resampling(rng, weights)
         fill!(particles.log_weights, zero(ess))
     else
-        idx = collect(1:filter.N)
+        idx = collect(1:(filter.N))
     end
 
     proposed_states = map(
-        x -> SSMProblems.simulate(rng, model.dyn, step, x, extra),
-        particles[idx]
+        x -> SSMProblems.simulate(rng, model.dyn, step, x, extra), particles[idx]
     )
 
     return ParticleContainer(proposed_states, particles.log_weights)
 end
 
 function update(
-        particles::ParticleContainer,
-        model::StateSpaceModel,
-        observation,
-        filter::BootstrapFilter,
-        step::Integer,
-        extra
-    )
+    particles::ParticleContainer,
+    model::StateSpaceModel{T},
+    observation,
+    filter::BootstrapFilter,
+    step::Integer,
+    extra,
+) where {T}
     log_marginals = map(
         x -> SSMProblems.logdensity(model.obs, step, x, observation, extra),
-        collect(particles)
+        collect(particles),
     )
 
-    # if threshold is set below 1.0, the log evidence is not correct
+    # marginal log evidence is not correct
     return (
-        ParticleContainer(particles.vals, particles.log_weights+log_marginals),
-        logsumexp(log_marginals) - logsumexp(particles.log_weights)
+        ParticleContainer(particles.vals, particles.log_weights + log_marginals),
+        logsumexp(log_marginals) - logsumexp(particles.log_weights),
     )
 end

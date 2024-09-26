@@ -3,54 +3,46 @@ using CairoMakie
 
 include("simple-filters.jl")
 
-true_params, simulation_model = let T = Float32
-    θ = randexp(T, 3)
-    dyn = LinearGaussianLatentDynamics(T[1 1; 0 1], diagm(θ[1:2]))
-    obs = LinearGaussianObservationProcess(T[0.5 0.5], diagm(θ[3:end]))
-    θ, StateSpaceModel(dyn, obs)
+# use a local level trend model
+function simulation_model(σx²::T, σy²::T) where {T<:Real}
+    init = Gaussian(zeros(T, 2), PDMat(diagm(ones(T, 2))))
+    dyn = LinearGaussianLatentDynamics(T[1 1; 0 1], T[0; 0], [σx² 0; 0 0], init)
+    obs = LinearGaussianObservationProcess(T[1 0], [σy²;;])
+    return StateSpaceModel(dyn, obs)
 end
+
+true_params = randexp(Float32, 2)
+true_model = simulation_model(true_params...)
 
 # simulate data
 rng = MersenneTwister(1234)
-_, _, data = sample(rng, simulation_model, 150)
+_, _, data = sample(rng, true_model, 150)
 
 # consider a default Gamma prior with Float32s
-prior_dist = product_distribution(Gamma(1.0f0), Gamma(1.0f0), Gamma(1.0f0))
+prior_dist = product_distribution(Gamma(1.0f0), Gamma(1.0f0))
 
 # test the adaptive resampling procedure
-sample(rng, simulation_model, data, BF(512, 0.1); debug=true);
+_, llbf = sample(rng, true_model, data, BF(512, 0.5); debug=true);
+_, llkf = sample(rng, true_model, data, KF());
 
-
-#=
-    Not crazy about this structure, especially since the RNG is referenced on
-    the global scope. I think we can make a PMCMC sampler type which includes
-    the filter algorithm within the sampler definition.
-
-    Another issue is that we lose information on the states. Granted, this is
-    also by design since that would cost a considerable amount of memory, but
-    is useful nonetheless. This also needs to interface with bundle_samples()
-    different than ususal, since we have the parameter space and the filtered
-    states.
-=#
+# basic RWMH ala AdvancedMH
 function density(θ::Vector{T}) where {T<:Real}
     if insupport(prior_dist, θ)
-        dyn = LinearGaussianLatentDynamics(T[1 1; 0 1], diagm(θ[1:2]))
-        obs = LinearGaussianObservationProcess(T[0.5 0.5], diagm(θ[3:end]))
-        
-        # _, ll = sample(rng, StateSpaceModel(dyn, obs), data, BF(512))
-        _, ll = sample(rng, StateSpaceModel(dyn, obs), data, KF())
+        simulation_model(θ...)
+
+        # _, ll = sample(rng, simulation_model(θ...), data, BF(512))
+        _, ll = sample(rng, simulation_model(θ...), data, KF())
         return ll + logpdf(prior_dist, θ)
     else
         return -Inf
     end
 end
 
-# plug it into the DensityModel interface for now
-pmmh = RWMH(MvNormal(zeros(Float32, 3), (0.01f0) * I))
+pmmh = RWMH(MvNormal(zeros(Float32, 2), (0.01f0) * I))
 model = DensityModel(density)
 
 # works with AdvancedMH out of the box
-chains = sample(model, pmmh, 10_000)
+chains = sample(model, pmmh, 2_000)
 burn_in = 1_000
 
 # plot the posteriors
@@ -58,7 +50,7 @@ hist_plots = begin
     param_post = hcat(getproperty.(chains[burn_in:end], :params)...)
     fig = Figure(; size=(1200, 400))
 
-    for i in 1:3
+    for i in 1:2
         # plot the posteriors with burn-in
         hist(fig[1, i], param_post[i, :]; color=:gray, strokewidth=1, normalization=:pdf)
 
