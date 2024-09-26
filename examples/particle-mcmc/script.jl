@@ -28,8 +28,6 @@ _, llkf = sample(rng, true_model, data, KF());
 # basic RWMH ala AdvancedMH
 function density(θ::Vector{T}) where {T<:Real}
     if insupport(prior_dist, θ)
-        simulation_model(θ...)
-
         # _, ll = sample(rng, simulation_model(θ...), data, BF(512))
         _, ll = sample(rng, simulation_model(θ...), data, KF())
         return ll + logpdf(prior_dist, θ)
@@ -42,7 +40,7 @@ pmmh = RWMH(MvNormal(zeros(Float32, 2), (0.01f0) * I))
 model = DensityModel(density)
 
 # works with AdvancedMH out of the box
-chains = sample(model, pmmh, 2_000)
+chains = sample(model, pmmh, 50_000)
 burn_in = 1_000
 
 # plot the posteriors
@@ -52,10 +50,16 @@ hist_plots = begin
 
     for i in 1:2
         # plot the posteriors with burn-in
-        hist(fig[1, i], param_post[i, :]; color=:gray, strokewidth=1, normalization=:pdf)
+        hist(
+            fig[1, i],
+            param_post[i, :];
+            color=(:black, 0.4),
+            strokewidth=1,
+            normalization=:pdf,
+        )
 
         # plot the true values
-        vlines!(fig[1, i], true_params[i]; color=:red, linestyle=:dash, linewidth=2)
+        vlines!(fig[1, i], true_params[i]; color=:red, linestyle=:dash, linewidth=3)
     end
 
     fig

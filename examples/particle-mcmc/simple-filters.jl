@@ -185,7 +185,7 @@ end
 
 function predict(
     rng::AbstractRNG,
-    particles::Gaussian,
+    states::Gaussian,
     model::LinearGaussianModel,
     filter::KalmanFilter,
     step::Integer,
@@ -193,15 +193,15 @@ function predict(
 )
     @unpack A, b, Q = model.dyn
 
-    predicted_particles = let μ = particles.μ, Σ = particles.Σ
+    predicted_states = let μ = states.μ, Σ = states.Σ
         Gaussian(A * μ + b, A * Σ * A' + Q)
     end
 
-    return predicted_particles
+    return predicted_states
 end
 
 function update(
-    proposed_particles::Gaussian,
+    proposed_states::Gaussian,
     model::LinearGaussianModel,
     observation,
     filter::KalmanFilter,
@@ -210,13 +210,13 @@ function update(
 )
     @unpack H, R = model.obs
 
-    particles, residual, S = GaussianDistributions.correct(
-        proposed_particles, Gaussian(observation, R), H
+    states, residual, S = GaussianDistributions.correct(
+        proposed_states, Gaussian(observation, R), H
     )
 
     log_marginal = logpdf(Gaussian(zero(residual), Symmetric(S)), residual)
 
-    return particles, log_marginal
+    return states, log_marginal
 end
 
 ## BOOTSTRAP FILTER ###########################################################
@@ -242,34 +242,34 @@ end
 
 function predict(
     rng::AbstractRNG,
-    particles::ParticleContainer,
+    states::ParticleContainer,
     model::StateSpaceModel,
     filter::BootstrapFilter,
     step::Integer,
     extra;
     debug::Bool=false,
 )
-    weights = softmax(particles.log_weights)
+    weights = softmax(states.log_weights)
     ess = inv(sum(abs2, weights))
 
     debug && println("t: $step \tESS: $ess")
 
     if resample_threshold(filter) ≥ ess
         idx = multinomial_resampling(rng, weights)
-        fill!(particles.log_weights, zero(ess))
+        fill!(states.log_weights, zero(ess))
     else
         idx = collect(1:(filter.N))
     end
 
     proposed_states = map(
-        x -> SSMProblems.simulate(rng, model.dyn, step, x, extra), particles[idx]
+        x -> SSMProblems.simulate(rng, model.dyn, step, x, extra), states[idx]
     )
 
-    return ParticleContainer(proposed_states, particles.log_weights)
+    return ParticleContainer(proposed_states, states.log_weights)
 end
 
 function update(
-    particles::ParticleContainer,
+    states::ParticleContainer,
     model::StateSpaceModel{T},
     observation,
     filter::BootstrapFilter,
@@ -278,12 +278,12 @@ function update(
 ) where {T}
     log_marginals = map(
         x -> SSMProblems.logdensity(model.obs, step, x, observation, extra),
-        collect(particles),
+        collect(states),
     )
 
     # marginal log evidence is not correct
     return (
-        ParticleContainer(particles.vals, particles.log_weights + log_marginals),
-        logsumexp(log_marginals) - logsumexp(particles.log_weights),
+        ParticleContainer(states.vals, states.log_weights + log_marginals),
+        logsumexp(log_marginals) - logsumexp(states.log_weights),
     )
 end
