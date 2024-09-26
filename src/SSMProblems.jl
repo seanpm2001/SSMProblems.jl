@@ -244,10 +244,13 @@ abstract type AbstractStateSpaceModel <: AbstractMCMC.AbstractModel end
     - `dyn::LD`: The latent dynamics of the state space model.
     - `obs::OP`: The observation process of the state space model.
 """
-struct StateSpaceModel{T<:Real,LD<:LatentDynamics,OP<:ObservationProcess} <: AbstractStateSpaceModel
+struct StateSpaceModel{T<:Real,LD<:LatentDynamics,OP<:ObservationProcess} <:
+       AbstractStateSpaceModel
     dyn::LD
     obs::OP
-    function StateSpaceModel(dyn::LatentDynamics{LDT}, obs::ObservationProcess{OPT}) where {OPT,LDT}
+    function StateSpaceModel(
+        dyn::LatentDynamics{LDT}, obs::ObservationProcess{OPT}
+    ) where {OPT,LDT}
         @assert eltype(OPT) == eltype(LDT) "$LDT and $OPT have mismatched types"
         return new{eltype(OPT),typeof(dyn),typeof(obs)}(dyn, obs)
     end

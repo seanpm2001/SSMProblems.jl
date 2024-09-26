@@ -10,7 +10,7 @@ function sample(
 
     T_dyn = eltype(LD)
     T_obs = eltype(OP)
-    
+
     xs = Vector{T_dyn}(undef, T)
     ys = Vector{T_obs}(undef, T)
 

@@ -277,8 +277,7 @@ function update(
     extra,
 ) where {T}
     log_marginals = map(
-        x -> SSMProblems.logdensity(model.obs, step, x, observation, extra),
-        collect(states),
+        x -> SSMProblems.logdensity(model.obs, step, x, observation, extra), collect(states)
     )
 
     # marginal log evidence is not correct
