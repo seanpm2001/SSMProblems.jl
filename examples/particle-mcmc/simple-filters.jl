@@ -280,9 +280,10 @@ function update(
         x -> SSMProblems.logdensity(model.obs, step, x, observation, extra), collect(states)
     )
 
-    # marginal log evidence is not correct
+    # improve this calculation
+    updated_states = ParticleContainer(states.vals, states.log_weights + log_marginals)
     return (
-        ParticleContainer(states.vals, states.log_weights + log_marginals),
-        logsumexp(log_marginals) - logsumexp(states.log_weights),
+        updated_states,
+        logsumexp(updated_states.log_weights) - logsumexp(states.log_weights),
     )
 end
