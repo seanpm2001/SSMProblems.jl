@@ -11,15 +11,15 @@ function simulation_model(σx²::T, σy²::T) where {T<:Real}
     return StateSpaceModel(dyn, obs)
 end
 
-true_params = randexp(Float32, 2)
-true_model = simulation_model(true_params...)
+true_params = randexp(Float32, 2);
+true_model = simulation_model(true_params...);
 
 # simulate data
-rng = MersenneTwister(1234)
-_, _, data = sample(rng, true_model, 150)
+rng = MersenneTwister(1234);
+_, _, data = sample(rng, true_model, 150);
 
 # consider a default Gamma prior with Float32s
-prior_dist = product_distribution(Gamma(1.0f0), Gamma(1.0f0))
+prior_dist = product_distribution(Gamma(1.0f0), Gamma(1.0f0));
 
 # test the adaptive resampling procedure
 _, llbf = sample(rng, true_model, data, BF(512, 0.5); debug=true);
@@ -36,12 +36,12 @@ function density(θ::Vector{T}) where {T<:Real}
     end
 end
 
-pmmh = RWMH(MvNormal(zeros(Float32, 2), (0.01f0) * I))
-model = DensityModel(density)
+pmmh = RWMH(MvNormal(zeros(Float32, 2), (0.01f0) * I));
+model = DensityModel(density);
 
 # works with AdvancedMH out of the box
-chains = sample(model, pmmh, 50_000)
-burn_in = 1_000
+chains = sample(model, pmmh, 50_000);
+burn_in = 1_000;
 
 # plot the posteriors
 hist_plots = begin

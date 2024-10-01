@@ -85,10 +85,11 @@ end
 
 # TODO: this should be done in the log domain and also parallelized
 function metropolis_resampling(
-    rng::AbstractRNG, weights::AbstractVector{WT}, n::Int64=length(weights)
+    rng::AbstractRNG, weights::AbstractVector{WT}, n::Int64=length(weights), ε::Float64=0.01
 ) where {WT<:Real}
     # pre-calculations
-    bins = Int64(cld(mean(weights), maximum(weights)))
+    β = mean(weights)
+    bins = Int64(cld(log(ε), log(1 - β)))
 
     # initialize the algorithm
     a = Vector{Int64}(undef, n)
@@ -103,6 +104,28 @@ function metropolis_resampling(
             end
         end
         a[i] = k
+    end
+
+    return a
+end
+
+function rejection_resampling(
+    rng::AbstractRNG, weights::AbstractVector{WT}, n::Int64=length(weights)
+) where {WT<:Real}
+    # pre-calculations
+    max_weight = maximum(weights)
+
+    # initialize the algorithm
+    a = Vector{Int64}(undef, n)
+
+    @inbounds for i in 1:n
+        j = i
+        u = rand(rng)
+        while u > weights[j] / max_weight
+            j = rand(1:n)
+            u = rand(rng)
+        end
+        a[i] = j
     end
 
     return a
@@ -235,7 +258,7 @@ function predict(
     debug && print("\nt: $step \tESS: $ess")
 
     if resample_threshold(filter) ≥ ess
-        idx = multinomial_resampling(rng, weights)
+        idx = systematic_resampling(rng, weights)
         fill!(states.log_weights, zero(ess))
     else
         idx = 1:(filter.N)
@@ -287,6 +310,29 @@ function get_ancestry(tree::ParticleTree{T}) where {T}
     return paths
 end
 
+# NOTE: this function remains unused, and is purely for demonstrative purposes
+function get_trunk(tree::ParticleTree{T}) where {T}
+    leaves = deepcopy(tree.leaves)
+    while !allequal(leaves)
+        for (i, leaf) in enumerate(leaves)
+            leaves[i] = tree.parents[leaf]
+        end
+
+        # if there are multiple root nodes return nothing
+        if any(iszero, leaves)
+            return nothing
+        end
+    end
+
+    root_node = leaves[1]
+    trunk_ancestry = Int64[]
+    while (root_node > 0)
+        push!(trunk_ancestry, root_node)
+        root_node = tree.parents[root_node]
+    end
+    return (leaves=trunk_ancestry, states=getindex(tree.states, trunk_ancestry))
+end
+
 ## VISUALIZATION ###########################################################################
 
 # use a local level trend model
@@ -306,20 +352,29 @@ rng = MersenneTwister(1234);
 _, _, data = sample(rng, true_model, 150);
 
 # test the adaptive resampling procedure
-hist, llbf = sample(rng, true_model, data, BF(512, 0.5); debug=true);
+hist, llbf = sample(rng, true_model, data, BF(128, 1.0); debug=true);
 
 # plot the smoothed states to validate the algorithm
 smoothed_trend = begin
-    fig = Figure()
-    ax = Axis(fig[1, 1])
+    fig = Figure(; size=(1200, 400))
+    ax1 = Axis(fig[1, 1])
+    ax2 = Axis(fig[1, 2])
 
     # this is gross but it works fro visualization purposes
     all_paths = map(x -> hcat(x...), get_ancestry(hist.tree))
     mean_paths = mean(all_paths, weights(softmax(hist.log_weights)))
+    n_paths = length(all_paths)
 
     # plot smoothed states in black and observed data in red
-    lines!(ax, mean_paths[1, :]; color=:black)
-    lines!(ax, vcat(data...); color=:red)
+    lines!(ax1, mean_paths[1, :]; color=:black)
+    lines!(ax1, vcat(0, data...); color=:red, linestyle=:dash)
+
+    # plot ancestry tree in graded black and data in red
+    lines!.(ax2, getindex.(all_paths, 1, :), color=(:black, 2 / n_paths))
+    lines!(ax2, vcat(0, data...); color=:red, linestyle=:dash)
 
     fig
 end
+
+# particle count over 256 likely returns nothing
+trunk = get_trunk(hist.tree);
