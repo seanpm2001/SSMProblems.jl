@@ -163,7 +163,8 @@ function insert!(
 
     ## insert new generation and update parent child relationships
     setindex!(tree.states, states, tree.leaves)
-    return setindex!(tree.parents, parents, tree.leaves)
+    setindex!(tree.parents, parents, tree.leaves)
+    return tree
 end
 
 # TODO: clean this up
@@ -173,7 +174,8 @@ function expand!(tree::ParticleTree)
 
     # new allocations must be zero valued, this is not a perfect solution
     tree.parents = [tree.parents; zero(tree.parents)]
-    return tree.offspring = [tree.offspring; zero(tree.offspring)]
+    tree.offspring = [tree.offspring; zero(tree.offspring)]
+    return tree
 end
 
 function get_offspring(a::AbstractVector{Int64})
