@@ -8,7 +8,7 @@ using StatsFuns
 
 import AbstractMCMC: sample, AbstractSampler
 
-## UTILITIES ##################################################################
+## UTILITIES ###############################################################################
 
 # GaussianDistributions.correct will error when type casting otherwise
 function Base.convert(::Type{PDMat{T,MT}}, mat::MT) where {MT<:AbstractMatrix,T<:Real}
@@ -30,8 +30,10 @@ function multinomial_resampling(
     return rand(rng, Distributions.Categorical(weights), N)
 end
 
+abstract type AbstractParticleContainer{T} end
+
 # TODO: improve particle storage
-struct ParticleContainer{T,WT<:Real}
+struct ParticleContainer{T,WT<:Real} <: AbstractParticleContainer{T}
     vals::Vector{T}
     log_weights::Vector{WT}
 end
@@ -46,7 +48,7 @@ function Base.setindex!(pc::ParticleContainer{T}, p::T, i::Int) where {T}
     return Base.setindex!(pc.vals, p, i)
 end
 
-## LINEAR GAUSSIAN STATE SPACE MODEL ##########################################
+## LINEAR GAUSSIAN STATE SPACE MODEL #######################################################
 
 struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics{Vector{T}}
     """
@@ -116,7 +118,7 @@ function PSDMat(mat::AbstractMatrix)
     return PDMat(mat, Cholesky(Up))
 end
 
-## FILTERING ##################################################################
+## FILTERING ###############################################################################
 
 abstract type AbstractFilter <: AbstractSampler end
 
@@ -170,7 +172,7 @@ function sample(
     return filtered_states, log_evidence
 end
 
-## KALMAN FILTER ##############################################################
+## KALMAN FILTER ###########################################################################
 
 struct KalmanFilter <: AbstractFilter end
 
@@ -219,7 +221,7 @@ function update(
     return states, log_marginal
 end
 
-## BOOTSTRAP FILTER ###########################################################
+## BOOTSTRAP FILTER ########################################################################
 
 # TODO: fix the adaptive resampling
 struct BootstrapFilter{T<:Real} <: AbstractFilter
@@ -280,7 +282,7 @@ function update(
         x -> SSMProblems.logdensity(model.obs, step, x, observation, extra), collect(states)
     )
 
-    # improve this calculation
+    # TODO: improve this calculation
     updated_states = ParticleContainer(states.vals, states.log_weights + log_marginals)
     return (
         updated_states,
