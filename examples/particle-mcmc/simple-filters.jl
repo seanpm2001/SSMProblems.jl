@@ -24,30 +24,6 @@ function Distributions.logpdf(P::Gaussian, x)
     ) / 2
 end
 
-function multinomial_resampling(
-    rng::AbstractRNG, weights::AbstractVector{<:Real}, N::Integer=length(weights)
-)
-    return rand(rng, Distributions.Categorical(weights), N)
-end
-
-abstract type AbstractParticleContainer{T} end
-
-# TODO: improve particle storage
-struct ParticleContainer{T,WT<:Real} <: AbstractParticleContainer{T}
-    vals::Vector{T}
-    log_weights::Vector{WT}
-end
-
-Base.collect(pc::ParticleContainer) = pc.vals
-Base.length(pc::ParticleContainer) = length(pc.vals)
-Base.keys(pc::ParticleContainer) = LinearIndices(pc.vals)
-
-Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Int) = pc.vals[i]
-Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Vector{Int}) = pc.vals[i]
-function Base.setindex!(pc::ParticleContainer{T}, p::T, i::Int) where {T}
-    return Base.setindex!(pc.vals, p, i)
-end
-
 ## LINEAR GAUSSIAN STATE SPACE MODEL #######################################################
 
 struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics{Vector{T}}
@@ -151,7 +127,7 @@ function sample(
     callback=nothing,
     kwargs...,
 )
-    filtered_states = initialise(rng, model, filter, nothing)
+    filtered_states = initialise(rng, model, filter, nothing; kwargs...)
     log_evidence = zero(eltype(model))
 
     for t in eachindex(observations)
@@ -160,7 +136,7 @@ function sample(
         )
 
         filtered_states, log_marginal = update(
-            proposed_states, model, observations[t], filter, t, nothing
+            proposed_states, model, observations[t], filter, t, nothing; kwargs...
         )
 
         log_evidence += log_marginal
@@ -234,58 +210,73 @@ BF(N::Integer, rs::Real=1.0) = BootstrapFilter(N, rs)
 resample_threshold(filter::BootstrapFilter) = filter.threshold * filter.N
 
 function initialise(
-    rng::AbstractRNG, model::StateSpaceModel, filter::BootstrapFilter, extra
+    rng::AbstractRNG,
+    model::StateSpaceModel,
+    filter::BootstrapFilter,
+    extra;
+    store_ancestry::Bool=false,
+    kwargs...,
 )
-    init_dist = SSMProblems.distribution(model.dyn, extra)
-    initial_states = map(x -> rand(rng, init_dist), 1:(filter.N))
+    initial_dist = SSMProblems.distribution(model.dyn, extra)
+    initial_states = map(x -> rand(rng, initial_dist), 1:(filter.N))
+    initial_weights = zeros(eltype(model), filter.N)
 
-    return ParticleContainer(initial_states, zeros(eltype(model), filter.N))
+    # there's likely a more elegant solution than this...
+    if store_ancestry
+        return AncestryContainer(initial_states, initial_weights)
+    else
+        return ParticleContainer(initial_states, initial_weights)
+    end
+end
+
+function resample(
+    rng::AbstractRNG, states::AbstractParticleContainer, filter::BootstrapFilter; kwargs...
+)
+    weights = softmax(states.log_weights)
+    ess = inv(sum(abs2, weights))
+    @debug "ESS: $ess"
+
+    if resample_threshold(filter) ≥ ess
+        idx = systematic_resampling(rng, weights; kwargs...)
+        reset_weights!(states)
+    else
+        idx = 1:(filter.N)
+    end
+
+    return idx
 end
 
 function predict(
     rng::AbstractRNG,
-    states::ParticleContainer,
+    states::AbstractParticleContainer,
     model::StateSpaceModel,
     filter::BootstrapFilter,
     step::Integer,
     extra;
-    debug::Bool=false,
+    kwargs...,
 )
-    weights = softmax(states.log_weights)
-    ess = inv(sum(abs2, weights))
-
-    debug && println("t: $step \tESS: $ess")
-
-    if resample_threshold(filter) ≥ ess
-        idx = multinomial_resampling(rng, weights)
-        fill!(states.log_weights, zero(ess))
-    else
-        idx = collect(1:(filter.N))
-    end
-
+    idx = resample(rng, states, filter; kwargs...)
     proposed_states = map(
-        x -> SSMProblems.simulate(rng, model.dyn, step, x, extra), states[idx]
+        x -> SSMProblems.simulate(rng, model.dyn, step, x, extra), getindex(states, idx)
     )
 
-    return ParticleContainer(proposed_states, states.log_weights)
+    return store!(states, proposed_states, idx)
 end
 
 function update(
-    states::ParticleContainer,
+    states::AbstractParticleContainer,
     model::StateSpaceModel{T},
     observation,
     filter::BootstrapFilter,
     step::Integer,
-    extra,
+    extra;
+    kwargs...,
 ) where {T}
     log_marginals = map(
         x -> SSMProblems.logdensity(model.obs, step, x, observation, extra), collect(states)
     )
 
-    # TODO: improve this calculation
-    updated_states = ParticleContainer(states.vals, states.log_weights + log_marginals)
-    return (
-        updated_states,
-        logsumexp(updated_states.log_weights) - logsumexp(states.log_weights),
-    )
+    prev_log_marginal = logsumexp(states.log_weights)
+    states.log_weights += log_marginals
+    return (states, logsumexp(states.log_weights) - prev_log_marginal)
 end

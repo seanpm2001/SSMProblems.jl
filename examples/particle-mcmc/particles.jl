@@ -1,135 +1,46 @@
-using StatsBase: weights, mean
-using CairoMakie
 using DataStructures: Stack
-
-include("simple-filters.jl")
 
 ## PARTICLES ###############################################################################
 
-#=
-    I want to include Frederic's original, very elegant, particle interface for reference.
-    Ideally, I want to borrow the syntax and convenience of this interface such that on the
-    user's end there is little to no difference between this and Lawrence Murray's particle
-    path storage.
+abstract type AbstractParticleContainer{T} end
 
-    I have yet to benchmark the differences, but I'm keen to check the performance gain on
-    some DGPs.
-=#
+"""
+    store!(particles, new_states, [idx])
 
-# abstract type Node{T} end
+update the state component of the particle container, with optional parent indices supplied
+for use in ancestry storage.
+"""
+function store! end
 
-# struct Root{T} <: Node{T} end
-# Root(T) = Root{T}()
-# Root() = Root(Any)
+"""
+    reset_weights!(particles)
 
-# """
-#     Particle{T}
-# Particle as immutable LinkedList. 
-# """
-# struct Particle{T} <: Node{T}
-#     parent::Node{T}
-#     state::T
-# end
+in-place method to reset the log weights of the particle cloud to zero; typically called
+following a resampling step.
+"""
+function reset_weights! end
 
-# Particle(state::T) where {T} = Particle(Root(T), state)
-
-# Base.show(io::IO, p::Particle{T}) where {T} = print(io, "Particle{$T}($(p.state))")
-
-# """
-#     linearize(particle)
-# Return the trace of a particle, i.e. the sequence of states from the root to the particle.
-# """
-# function linearize(particle::Particle{T}) where {T}
-#     trace = T[]
-#     current = particle
-#     while !isa(current, Root)
-#         push!(trace, current.state)
-#         current = current.parent
-#     end
-#     return trace
-# end
-
-# function linearize(f::Function, particle::Particle)
-#     trace = []
-#     current = particle
-#     while !isa(current, Root)
-#         push!(trace, f(current.state))
-#         current = current.parent
-#     end
-#     return trace
-# end
-
-## RESAMPLERS ##############################################################################
-
-function systematic_resampling(
-    rng::AbstractRNG, weights::AbstractVector{WT}, n::Int64=length(weights)
-) where {WT<:Real}
-    # pre-calculations
-    @inbounds v = n * weights[1]
-    u = oftype(v, rand(rng))
-
-    # initialize sampling algorithm
-    a = Vector{Int64}(undef, n)
-    idx = 1
-
-    @inbounds for i in 1:n
-        while v < u
-            idx += 1
-            v += n * weights[idx]
-        end
-        a[i] = idx
-        u += one(u)
-    end
-
-    return a
+mutable struct ParticleContainer{T,WT<:Real} <: AbstractParticleContainer{T}
+    vals::Vector{T}
+    log_weights::Vector{WT}
 end
 
-# TODO: this should be done in the log domain and also parallelized
-function metropolis_resampling(
-    rng::AbstractRNG, weights::AbstractVector{WT}, n::Int64=length(weights), ε::Float64=0.01
-) where {WT<:Real}
-    # pre-calculations
-    β = mean(weights)
-    bins = Int64(cld(log(ε), log(1 - β)))
+Base.collect(pc::ParticleContainer) = pc.vals
+Base.length(pc::ParticleContainer) = length(pc.vals)
+Base.keys(pc::ParticleContainer) = LinearIndices(pc.vals)
 
-    # initialize the algorithm
-    a = Vector{Int64}(undef, n)
+# not sure if this is kosher, since it doesn't follow the convention of Base.getindex
+Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Int) = pc.vals[i]
+Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Vector{Int}) = pc.vals[i]
 
-    @inbounds for i in 1:n
-        k = i
-        for _ in 1:bins
-            j = rand(rng, 1:n)
-            v = weights[j] / weights[k]
-            if rand(rng) ≤ v
-                k = j
-            end
-        end
-        a[i] = k
-    end
-
-    return a
+function store!(pc::ParticleContainer, new_states, idx...; kwargs...)
+    setindex!(pc.vals, new_states, eachindex(pc))
+    return pc
 end
 
-function rejection_resampling(
-    rng::AbstractRNG, weights::AbstractVector{WT}, n::Int64=length(weights)
-) where {WT<:Real}
-    # pre-calculations
-    max_weight = maximum(weights)
-
-    # initialize the algorithm
-    a = Vector{Int64}(undef, n)
-
-    @inbounds for i in 1:n
-        j = i
-        u = rand(rng)
-        while u > weights[j] / max_weight
-            j = rand(1:n)
-            u = rand(rng)
-        end
-        a[i] = j
-    end
-
-    return a
+function reset_weights!(pc::ParticleContainer{T,WT}) where {T,WT<:Real}
+    fill!(pc.log_weights, zero(WT))
+    return pc.log_weights
 end
 
 ## JACOB-MURRAY PARTICLE STORAGE ###########################################################
@@ -175,14 +86,14 @@ function prune!(tree::ParticleTree, offspring::Vector{Int64})
 end
 
 function insert!(
-    tree::ParticleTree{T}, states::Vector{T}, a::AbstractVector{Int64}; debug::Bool=false
+    tree::ParticleTree{T}, states::Vector{T}, a::AbstractVector{Int64}
 ) where {T}
     ## parents of new generation
     parents = getindex(tree.leaves, a)
 
     ## ensure there are enough dead branches
     if (length(tree.free_indices) < length(a))
-        debug && print("\texpanding tree")
+        @debug "expanding tree"
         expand!(tree)
     end
 
@@ -197,7 +108,6 @@ function insert!(
     return tree
 end
 
-# TODO: clean this up
 function expand!(tree::ParticleTree)
     M = length(tree)
     resize!(tree.states, 2 * M)
@@ -241,65 +151,16 @@ function Base.getindex(ac::AncestryContainer, a::AbstractVector{Int64})
     return getindex(ac.tree.states, getindex(ac.tree.leaves, a))
 end
 
-# replaces the function defined in simple-filters.jl
-function initialise(
-    rng::AbstractRNG, model::StateSpaceModel, filter::BootstrapFilter, extra
-)
-    init_dist = SSMProblems.distribution(model.dyn, extra)
-    initial_states = map(x -> rand(rng, init_dist), 1:(filter.N))
-
-    return AncestryContainer(initial_states, zeros(eltype(model), filter.N))
+function reset_weights!(ac::AncestryContainer{T,WT}) where {T,WT<:Real}
+    fill!(ac.log_weights, zero(WT))
+    return ac.log_weights
 end
 
-function predict(
-    rng::AbstractRNG,
-    states::AncestryContainer,
-    model::StateSpaceModel,
-    filter::BootstrapFilter,
-    step::Integer,
-    extra;
-    debug::Bool=false,
-)
-    weights = softmax(states.log_weights)
-    ess = inv(sum(abs2, weights))
-
-    debug && print("\nt: $step \tESS: $ess")
-
-    if resample_threshold(filter) ≥ ess
-        idx = systematic_resampling(rng, weights)
-        fill!(states.log_weights, zero(ess))
-    else
-        idx = 1:(filter.N)
-    end
-
-    proposed_states = map(
-        x -> SSMProblems.simulate(rng, model.dyn, step, x, extra), getindex(states, idx)
-    )
-
-    prune!(states.tree, get_offspring(idx))
-    insert!(states.tree, proposed_states, idx; debug)
-
-    return states
+function store!(ac::AncestryContainer, new_states, idx)
+    prune!(ac.tree, get_offspring(idx))
+    insert!(ac.tree, new_states, idx)
+    return ac
 end
-
-function update(
-    states::AncestryContainer,
-    model::StateSpaceModel{T},
-    observation,
-    filter::BootstrapFilter,
-    step::Integer,
-    extra,
-) where {T}
-    log_marginals = map(
-        x -> SSMProblems.logdensity(model.obs, step, x, observation, extra), collect(states)
-    )
-
-    prev_log_marginal = logsumexp(states.log_weights)
-    states.log_weights += log_marginals
-    return (states, logsumexp(states.log_weights) - prev_log_marginal)
-end
-
-## EXTRACTING ACESTRY ######################################################################
 
 # start at each leaf and retrace it's steps to the root node
 function get_ancestry(tree::ParticleTree{T}) where {T}
@@ -317,72 +178,3 @@ function get_ancestry(tree::ParticleTree{T}) where {T}
     end
     return paths
 end
-
-# NOTE: this function remains unused, and is purely for demonstrative purposes
-function get_trunk(tree::ParticleTree{T}) where {T}
-    leaves = deepcopy(tree.leaves)
-    while !allequal(leaves)
-        for (i, leaf) in enumerate(leaves)
-            leaves[i] = tree.parents[leaf]
-        end
-
-        # if there are multiple root nodes return nothing
-        if any(iszero, leaves)
-            return nothing
-        end
-    end
-
-    root_node = leaves[1]
-    trunk_ancestry = Int64[]
-    while (root_node > 0)
-        push!(trunk_ancestry, root_node)
-        root_node = tree.parents[root_node]
-    end
-    return (leaves=trunk_ancestry, states=getindex(tree.states, trunk_ancestry))
-end
-
-## VISUALIZATION ###########################################################################
-
-# use a local level trend model
-function simulation_model(σx²::T, σy²::T) where {T<:Real}
-    init = Gaussian(zeros(T, 2), PDMat(diagm(ones(T, 2))))
-    dyn = LinearGaussianLatentDynamics(T[1 1; 0 1], T[0; 0], [σx² 0; 0 0], init)
-    obs = LinearGaussianObservationProcess(T[1 0], [σy²;;])
-    return StateSpaceModel(dyn, obs)
-end
-
-# generate a model
-true_params = randexp(Float32, 2);
-true_model = simulation_model(true_params...);
-
-# simulate data
-rng = MersenneTwister(1234);
-_, _, data = sample(rng, true_model, 150);
-
-# test the adaptive resampling procedure
-hist, llbf = sample(rng, true_model, data, BF(128, 1.0); debug=true);
-
-# plot the smoothed states to validate the algorithm
-smoothed_trend = begin
-    fig = Figure(; size=(1200, 400))
-    ax1 = Axis(fig[1, 1])
-    ax2 = Axis(fig[1, 2])
-
-    # this is gross but it works fro visualization purposes
-    all_paths = map(x -> hcat(x...), get_ancestry(hist.tree))
-    mean_paths = mean(all_paths, weights(softmax(hist.log_weights)))
-    n_paths = length(all_paths)
-
-    # plot smoothed states in black and observed data in red
-    lines!(ax1, mean_paths[1, :]; color=:black)
-    lines!(ax1, vcat(0, data...); color=:red, linestyle=:dash)
-
-    # plot ancestry tree in graded black and data in red
-    lines!.(ax2, getindex.(all_paths, 1, :), color=(:black, 2 / n_paths))
-    lines!(ax2, vcat(0, data...); color=:red, linestyle=:dash)
-
-    fig
-end
-
-# particle count over 256 likely returns nothing
-trunk = get_trunk(hist.tree);

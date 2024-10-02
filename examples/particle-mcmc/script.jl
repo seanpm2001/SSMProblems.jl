@@ -1,7 +1,12 @@
 using AdvancedMH
 using CairoMakie
+using StatsBase: weights, mean
 
+include("particles.jl")
+include("resamplers.jl")
 include("simple-filters.jl")
+
+## FILTERING DEMONSTRATION #################################################################
 
 # use a local level trend model
 function simulation_model(σx²::T, σy²::T) where {T<:Real}
@@ -18,12 +23,35 @@ true_model = simulation_model(true_params...);
 rng = MersenneTwister(1234);
 _, _, data = sample(rng, true_model, 150);
 
+# test the adaptive resampling procedure
+states, llbf = sample(rng, true_model, data, BF(2048, 0.5); store_ancestry=true);
+
+# plot the smoothed states to validate the algorithm
+smoothed_trend = begin
+    fig = Figure(; size=(1200, 400))
+    ax1 = Axis(fig[1, 1])
+    ax2 = Axis(fig[1, 2])
+
+    # this is gross but it works fro visualization purposes
+    all_paths = map(x -> hcat(x...), get_ancestry(states.tree))
+    mean_paths = mean(all_paths, weights(softmax(states.log_weights)))
+    n_paths = length(all_paths)
+
+    # plot smoothed states in black and observed data in red
+    lines!(ax1, mean_paths[1, :]; color=:black)
+    lines!(ax1, vcat(0, data...); color=:red, linestyle=:dash)
+
+    # plot ancestry tree in graded black and data in red
+    lines!.(ax2, getindex.(all_paths, 1, :), color=(:black, maximum([2 / n_paths, 1e-2])))
+    lines!(ax2, vcat(0, data...); color=:red, linestyle=:dash)
+
+    fig
+end
+
+## PARTICLE MCMC ###########################################################################
+
 # consider a default Gamma prior with Float32s
 prior_dist = product_distribution(Gamma(1.0f0), Gamma(1.0f0));
-
-# test the adaptive resampling procedure
-_, llbf = sample(rng, true_model, data, BF(512, 0.5); debug=true);
-_, llkf = sample(rng, true_model, data, KF());
 
 # basic RWMH ala AdvancedMH
 function density(θ::Vector{T}) where {T<:Real}
