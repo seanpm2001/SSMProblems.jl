@@ -1,5 +1,6 @@
 using StatsBase: weights, mean
 using CairoMakie
+using DataStructures: Stack
 
 include("simple-filters.jl")
 
@@ -133,16 +134,23 @@ end
 
 ## JACOB-MURRAY PARTICLE STORAGE ###########################################################
 
+Base.append!(s::Stack, a::AbstractVector) = map(x -> push!(s, x), a)
+
 mutable struct ParticleTree{T}
     states::Vector{T}
     parents::Vector{Int64}
     leaves::Vector{Int64}
     offspring::Vector{Int64}
+    free_indices::Stack{Int64}
 
     function ParticleTree(states::Vector{T}, M::Integer) where {T}
         nodes = Vector{T}(undef, M)
+        initial_free_indices = Stack{Int64}()
+        append!(initial_free_indices, M:-1:(length(states) + 1))
         @inbounds nodes[1:length(states)] = states
-        return new{T}(nodes, zeros(Int64, M), 1:length(states), zeros(Int64, M))
+        return new{T}(
+            nodes, zeros(Int64, M), 1:length(states), zeros(Int64, M), initial_free_indices
+        )
     end
 end
 
@@ -157,6 +165,7 @@ function prune!(tree::ParticleTree, offspring::Vector{Int64})
     @inbounds for i in eachindex(offspring)
         j = tree.leaves[i]
         while (j > 0) && (tree.offspring[j] == 0)
+            push!(tree.free_indices, j)
             j = tree.parents[j]
             if j > 0
                 tree.offspring[j] -= 1
@@ -172,16 +181,14 @@ function insert!(
     parents = getindex(tree.leaves, a)
 
     ## ensure there are enough dead branches
-    if (sum(iszero.(tree.offspring)) < length(a))
+    if (length(tree.free_indices) < length(a))
         debug && print("\texpanding tree")
         expand!(tree)
     end
 
-    ## find dead branches and expand if too few branches
-    z = cumsum(iszero.(tree.offspring))
+    ## find places for new states
     @inbounds for i in eachindex(states)
-        # TODO: make a better lower bound operation
-        tree.leaves[i] = minimum([j for j in eachindex(tree) if (z[j] ≥ i)])
+        tree.leaves[i] = pop!(tree.free_indices)
     end
 
     ## insert new generation and update parent child relationships
@@ -198,6 +205,7 @@ function expand!(tree::ParticleTree)
     # new allocations must be zero valued, this is not a perfect solution
     tree.parents = [tree.parents; zero(tree.parents)]
     tree.offspring = [tree.offspring; zero(tree.offspring)]
+    append!(tree.free_indices, (2 * M):-1:(M + 1))
     return tree
 end
 
