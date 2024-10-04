@@ -24,16 +24,17 @@ rng = MersenneTwister(1234);
 _, _, data = sample(rng, true_model, 150);
 
 # test the adaptive resampling procedure
-states, llbf = sample(rng, true_model, data, BF(2048, 0.5); store_ancestry=true);
+bootstrap_filter = BF(256; threshold=0.5, resampler=Multinomial());
+states, llbf = sample(rng, true_model, bootstrap_filter, data);
 
-# plot the smoothed states to validate the algorithm
-smoothed_trend = begin
+# plot the smoothed states to validate the algorithm (currently broken)
+smoothed_trend = try
     fig = Figure(; size=(1200, 400))
     ax1 = Axis(fig[1, 1])
     ax2 = Axis(fig[1, 2])
 
     # this is gross but it works fro visualization purposes
-    all_paths = map(x -> hcat(x...), get_ancestry(states.tree))
+    all_paths = map(x -> hcat(x...), get_ancestry(sparse_ancestry))
     mean_paths = mean(all_paths, weights(softmax(states.log_weights)))
     n_paths = length(all_paths)
 
@@ -46,6 +47,8 @@ smoothed_trend = begin
     lines!(ax2, vcat(0, data...); color=:red, linestyle=:dash)
 
     fig
+catch
+    @error "Sparse ancestry storage callbacks not yet implemented, this will error"
 end
 
 ## PARTICLE MCMC ###########################################################################
@@ -56,8 +59,8 @@ prior_dist = product_distribution(Gamma(1.0f0), Gamma(1.0f0));
 # basic RWMH ala AdvancedMH
 function density(θ::Vector{T}) where {T<:Real}
     if insupport(prior_dist, θ)
-        # _, ll = sample(rng, simulation_model(θ...), data, BF(512))
-        _, ll = sample(rng, simulation_model(θ...), data, KF())
+        # _, ll = sample(rng, simulation_model(θ...), BF(512), data)
+        _, ll = sample(rng, simulation_model(θ...), KF(), data)
         return ll + logpdf(prior_dist, θ)
     else
         return -Inf

@@ -1,14 +1,22 @@
 using Random
 using Distributions
 
-function multinomial_resampling(
-    rng::AbstractRNG, weights::AbstractVector{WT}, n::Int64=length(weights); kwargs...
+abstract type AbstractResampler end
+
+## DOUBLE PRECISION STABLE ALGORITHMS ######################################################
+
+struct Multinomial <: AbstractResampler end
+
+function resample(
+    rng::AbstractRNG, ::Multinomial, weights::AbstractVector{WT}, n::Int64=length(weights)
 ) where {WT<:Real}
     return rand(rng, Distributions.Categorical(weights), n)
 end
 
-function systematic_resampling(
-    rng::AbstractRNG, weights::AbstractVector{WT}, n::Int64=length(weights); kwargs...
+struct Systematic <: AbstractResampler end
+
+function resample(
+    rng::AbstractRNG, ::Systematic, weights::AbstractVector{WT}, n::Int64=length(weights)
 ) where {WT<:Real}
     # pre-calculations
     @inbounds v = n * weights[1]
@@ -30,24 +38,45 @@ function systematic_resampling(
     return a
 end
 
-# TODO: this should be done in the log domain and also parallelized
-function metropolis_resampling(
+function resample(
     rng::AbstractRNG,
+    alg::Systematic,
+    weights::AbstractVector{Float32},
+    n::Int64=length(weights),
+)
+    try
+        return resample(rng, alg, weights, n)
+    catch e
+        throw(e("Systematic resampling is not numerically stable for single precision"))
+    end
+end
+
+## SINGLE PRECISION STABLE ALGORITHMS ######################################################
+
+struct Metropolis{T<:Real} <: AbstractResampler
+    ε::T
+    function Metropolis(ε::T=0.01) where {T<:Real}
+        return new{T}(ε)
+    end
+end
+
+# TODO: this should be done in the log domain and also parallelized
+function resample(
+    rng::AbstractRNG,
+    resampler::Metropolis,
     weights::AbstractVector{WT},
     n::Int64=length(weights);
-    ε::Float64=0.01,
-    kwargs...,
 ) where {WT<:Real}
     # pre-calculations
     β = mean(weights)
-    bins = Int64(cld(log(ε), log(1 - β)))
+    B = Int64(cld(log(resampler.ε), log(1 - β)))
 
     # initialize the algorithm
     a = Vector{Int64}(undef, n)
 
     @inbounds for i in 1:n
         k = i
-        for _ in 1:bins
+        for _ in 1:B
             j = rand(rng, 1:n)
             v = weights[j] / weights[k]
             if rand(rng) ≤ v
@@ -60,9 +89,11 @@ function metropolis_resampling(
     return a
 end
 
+struct Rejection <: AbstractResampler end
+
 # TODO: this should be done in the log domain and also parallelized
-function rejection_resampling(
-    rng::AbstractRNG, weights::AbstractVector{WT}, n::Int64=length(weights); kwargs...
+function resample(
+    rng::AbstractRNG, ::Rejection, weights::AbstractVector{WT}, n::Int64=length(weights)
 ) where {WT<:Real}
     # pre-calculations
     max_weight = maximum(weights)

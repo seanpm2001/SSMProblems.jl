@@ -99,14 +99,14 @@ end
 abstract type AbstractFilter <: AbstractSampler end
 
 """
-    predict([rng,] states, model, alg, [step, extra])
+    predict([rng,] model, alg, step, states, [extra])
 
 propagate the filtered states forward in time.
 """
 function predict end
 
 """
-    update(states, model, data, alg, [step, extra])
+    update(model, alg, step, states, data, [extra])
 
 update beliefs on the propagated states.
 """
@@ -122,8 +122,8 @@ function initialise end
 function sample(
     rng::AbstractRNG,
     model::StateSpaceModel,
-    observations::AbstractVector,
-    filter::AbstractFilter;
+    filter::AbstractFilter,
+    observations::AbstractVector;
     callback=nothing,
     kwargs...,
 )
@@ -132,11 +132,11 @@ function sample(
 
     for t in eachindex(observations)
         proposed_states = predict(
-            rng, filtered_states, model, filter, t, nothing; kwargs...
+            rng, model, filter, t, filtered_states, nothing; kwargs...
         )
 
         filtered_states, log_marginal = update(
-            proposed_states, model, observations[t], filter, t, nothing; kwargs...
+            model, filter, t, proposed_states, observations[t], nothing; kwargs...
         )
 
         log_evidence += log_marginal
@@ -155,7 +155,7 @@ struct KalmanFilter <: AbstractFilter end
 KF() = KalmanFilter()
 
 function initialise(
-    rng::AbstractRNG, model::LinearGaussianModel, filter::KalmanFilter, extras
+    rng::AbstractRNG, model::LinearGaussianModel, filter::KalmanFilter, extras; kwargs...
 )
     init_dist = SSMProblems.distribution(model.dyn, extras)
     return Gaussian(init_dist.μ, Matrix(init_dist.Σ))
@@ -163,11 +163,12 @@ end
 
 function predict(
     rng::AbstractRNG,
-    states::Gaussian,
     model::LinearGaussianModel,
     filter::KalmanFilter,
     step::Integer,
-    extra,
+    states::Gaussian,
+    extra;
+    kwargs...,
 )
     @unpack A, b, Q = model.dyn
 
@@ -179,12 +180,13 @@ function predict(
 end
 
 function update(
-    proposed_states::Gaussian,
     model::LinearGaussianModel,
-    observation,
     filter::KalmanFilter,
     step::Integer,
-    extra,
+    proposed_states::Gaussian,
+    observation,
+    extra;
+    kwargs...,
 )
     @unpack H, R = model.obs
 
@@ -194,50 +196,39 @@ function update(
 
     log_marginal = logpdf(Gaussian(zero(residual), Symmetric(S)), residual)
 
-    return states, log_marginal
+    return (states, log_marginal)
 end
 
 ## BOOTSTRAP FILTER ########################################################################
 
-# TODO: fix the adaptive resampling
-struct BootstrapFilter{T<:Real} <: AbstractFilter
+struct BootstrapFilter{T<:Real,RS<:AbstractResampler} <: AbstractFilter
     N::Int
     threshold::T
+    resampler::RS
 end
 
-BF(N::Integer, rs::Real=1.0) = BootstrapFilter(N, rs)
+function BF(N::Integer; threshold::Real=1.0, resampler::AbstractResampler=Systematic())
+    return BootstrapFilter(N, threshold, resampler)
+end
 
 resample_threshold(filter::BootstrapFilter) = filter.threshold * filter.N
 
 function initialise(
-    rng::AbstractRNG,
-    model::StateSpaceModel,
-    filter::BootstrapFilter,
-    extra;
-    store_ancestry::Bool=false,
-    kwargs...,
+    rng::AbstractRNG, model::StateSpaceModel, filter::BootstrapFilter, extra; kwargs...
 )
-    initial_dist = SSMProblems.distribution(model.dyn, extra)
-    initial_states = map(x -> rand(rng, initial_dist), 1:(filter.N))
+    initial_states = map(x -> SSMProblems.simulate(rng, model.dyn, extra), 1:(filter.N))
     initial_weights = zeros(eltype(model), filter.N)
 
-    # there's likely a more elegant solution than this...
-    if store_ancestry
-        return AncestryContainer(initial_states, initial_weights)
-    else
-        return ParticleContainer(initial_states, initial_weights)
-    end
+    return ParticleContainer(initial_states, initial_weights)
 end
 
-function resample(
-    rng::AbstractRNG, states::AbstractParticleContainer, filter::BootstrapFilter; kwargs...
-)
-    weights = softmax(states.log_weights)
+function resample(rng::AbstractRNG, states::ParticleContainer, filter::BootstrapFilter)
+    weights = StatsBase.weights(states)
     ess = inv(sum(abs2, weights))
     @debug "ESS: $ess"
 
     if resample_threshold(filter) ≥ ess
-        idx = systematic_resampling(rng, weights; kwargs...)
+        idx = resample(rng, filter.resampler, weights)
         reset_weights!(states)
     else
         idx = 1:(filter.N)
@@ -248,35 +239,38 @@ end
 
 function predict(
     rng::AbstractRNG,
-    states::AbstractParticleContainer,
     model::StateSpaceModel,
     filter::BootstrapFilter,
     step::Integer,
+    states::ParticleContainer,
     extra;
     kwargs...,
 )
-    idx = resample(rng, states, filter; kwargs...)
-    proposed_states = map(
-        x -> SSMProblems.simulate(rng, model.dyn, step, x, extra), getindex(states, idx)
+    states.ancestors = resample(rng, states, filter)
+    states.proposed = map(
+        x -> SSMProblems.simulate(rng, model.dyn, step, x, extra),
+        states.filtered[states.ancestors],
     )
 
-    return store!(states, proposed_states, idx)
+    return states
 end
 
 function update(
-    states::AbstractParticleContainer,
-    model::StateSpaceModel{T},
-    observation,
+    model::StateSpaceModel,
     filter::BootstrapFilter,
     step::Integer,
+    states::ParticleContainer,
+    observation,
     extra;
     kwargs...,
-) where {T}
+)
     log_marginals = map(
-        x -> SSMProblems.logdensity(model.obs, step, x, observation, extra), collect(states)
+        x -> SSMProblems.logdensity(model.obs, step, x, observation, extra), states.proposed
     )
 
     prev_log_marginal = logsumexp(states.log_weights)
     states.log_weights += log_marginals
+    states.filtered = states.proposed
+
     return (states, logsumexp(states.log_weights) - prev_log_marginal)
 end

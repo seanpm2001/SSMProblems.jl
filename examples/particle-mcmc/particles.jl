@@ -1,28 +1,21 @@
 using DataStructures: Stack
+using StatsBase
 
 ## PARTICLES ###############################################################################
 
-abstract type AbstractParticleContainer{T} end
-
-"""
-    store!(particles, new_states, [idx])
-
-update the state component of the particle container, with optional parent indices supplied
-for use in ancestry storage.
-"""
-function store! end
-
-"""
-    reset_weights!(particles)
-
-in-place method to reset the log weights of the particle cloud to zero; typically called
-following a resampling step.
-"""
-function reset_weights! end
-
-mutable struct ParticleContainer{T,WT<:Real} <: AbstractParticleContainer{T}
-    vals::Vector{T}
+mutable struct ParticleContainer{T,WT<:Real}
+    filtered::Vector{T}
+    proposed::Vector{T}
+    ancestors::Vector{Int64}
     log_weights::Vector{WT}
+
+    function ParticleContainer(
+        initial_states::Vector{T}, log_weights::Vector{WT}
+    ) where {T,WT<:Real}
+        return new{T,WT}(
+            initial_states, similar(initial_states), eachindex(log_weights), log_weights
+        )
+    end
 end
 
 Base.collect(pc::ParticleContainer) = pc.vals
@@ -33,17 +26,16 @@ Base.keys(pc::ParticleContainer) = LinearIndices(pc.vals)
 Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Int) = pc.vals[i]
 Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Vector{Int}) = pc.vals[i]
 
-function store!(pc::ParticleContainer, new_states, idx...; kwargs...)
-    setindex!(pc.vals, new_states, eachindex(pc))
-    return pc
-end
-
 function reset_weights!(pc::ParticleContainer{T,WT}) where {T,WT<:Real}
     fill!(pc.log_weights, zero(WT))
     return pc.log_weights
 end
 
-## JACOB-MURRAY PARTICLE STORAGE ###########################################################
+function StatsBase.weights(pc::ParticleContainer)
+    return softmax(pc.log_weights)
+end
+
+## SPARSE PARTICLE STORAGE #################################################################
 
 Base.append!(s::Stack, a::AbstractVector) = map(x -> push!(s, x), a)
 
@@ -69,10 +61,10 @@ Base.length(tree::ParticleTree) = length(tree.states)
 Base.keys(tree::ParticleTree) = LinearIndices(tree.states)
 
 function prune!(tree::ParticleTree, offspring::Vector{Int64})
-    ## insert new offspring counts
+    # insert new offspring counts
     setindex!(tree.offspring, offspring, tree.leaves)
 
-    ## update each branch
+    # update each branch
     @inbounds for i in eachindex(offspring)
         j = tree.leaves[i]
         while (j > 0) && (tree.offspring[j] == 0)
@@ -88,21 +80,21 @@ end
 function insert!(
     tree::ParticleTree{T}, states::Vector{T}, a::AbstractVector{Int64}
 ) where {T}
-    ## parents of new generation
+    # parents of new generation
     parents = getindex(tree.leaves, a)
 
-    ## ensure there are enough dead branches
+    # ensure there are enough dead branches
     if (length(tree.free_indices) < length(a))
         @debug "expanding tree"
         expand!(tree)
     end
 
-    ## find places for new states
+    # find places for new states
     @inbounds for i in eachindex(states)
         tree.leaves[i] = pop!(tree.free_indices)
     end
 
-    ## insert new generation and update parent child relationships
+    # insert new generation and update parent child relationships
     setindex!(tree.states, states, tree.leaves)
     setindex!(tree.parents, parents, tree.leaves)
     return tree
@@ -127,42 +119,6 @@ function get_offspring(a::AbstractVector{Int64})
     return offspring
 end
 
-## FILTERING WITH ANCESTRY #################################################################
-
-mutable struct AncestryContainer{T,WT<:Real} <: AbstractParticleContainer{T}
-    tree::ParticleTree{T}
-    log_weights::Vector{WT}
-
-    function AncestryContainer(
-        initial_states::Vector{T}, log_weights::Vector{WT}, C::Int64=1
-    ) where {T,WT<:Real}
-        N = length(log_weights)
-        M = floor(C * N * log(N))
-        tree = ParticleTree(initial_states, Int64(M))
-        return new{T,WT}(tree, log_weights)
-    end
-end
-
-function Base.collect(ac::AncestryContainer)
-    return getindex(ac.tree.states, ac.tree.leaves)
-end
-
-function Base.getindex(ac::AncestryContainer, a::AbstractVector{Int64})
-    return getindex(ac.tree.states, getindex(ac.tree.leaves, a))
-end
-
-function reset_weights!(ac::AncestryContainer{T,WT}) where {T,WT<:Real}
-    fill!(ac.log_weights, zero(WT))
-    return ac.log_weights
-end
-
-function store!(ac::AncestryContainer, new_states, idx)
-    prune!(ac.tree, get_offspring(idx))
-    insert!(ac.tree, new_states, idx)
-    return ac
-end
-
-# start at each leaf and retrace it's steps to the root node
 function get_ancestry(tree::ParticleTree{T}) where {T}
     paths = Vector{Vector{T}}(undef, length(tree.leaves))
     @inbounds for (k, i) in enumerate(tree.leaves)
