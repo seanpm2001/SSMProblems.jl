@@ -251,8 +251,8 @@ struct StateSpaceModel{T<:Real,LD<:LatentDynamics,OP<:ObservationProcess} <:
     function StateSpaceModel(
         dyn::LatentDynamics{LDT}, obs::ObservationProcess{OPT}
     ) where {OPT,LDT}
-        @assert eltype(OPT) == eltype(LDT) "$LDT and $OPT have mismatched types"
-        return new{eltype(OPT),typeof(dyn),typeof(obs)}(dyn, obs)
+        T = promote_type(eltype(OPT), eltype(LDT))
+        return new{T,typeof(dyn),typeof(obs)}(dyn, obs)
     end
 end
 
