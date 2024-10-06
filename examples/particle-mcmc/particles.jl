@@ -154,6 +154,7 @@ function (c::AncestorCallback)(model, filter, step, states, data; kwargs...)
     end
     prune!(c.tree, get_offspring(states.ancestors))
     insert!(c.tree, states.filtered, states.ancestors)
+    return nothing
 end
 
 mutable struct ResamplerCallback
@@ -171,4 +172,5 @@ function (c::ResamplerCallback)(model, filter, step, states, data; kwargs...)
         prune!(c.tree, get_offspring(states.ancestors))
         insert!(c.tree, collect(1:(filter.N)), states.ancestors)
     end
+    return nothing
 end
