@@ -105,7 +105,7 @@ function resample(
         j = i
         u = rand(rng)
         while u > weights[j] / max_weight
-            j = rand(1:n)
+            j = rand(rng, 1:n)
             u = rand(rng)
         end
         a[i] = j
