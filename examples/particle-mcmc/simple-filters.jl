@@ -142,7 +142,7 @@ function sample(
         log_evidence += log_marginal
 
         callback === nothing ||
-            callback(rng, model, observations, filtered_states, t; kwargs...)
+            callback(model, filter, t, filtered_states, observations; kwargs...)
     end
 
     return filtered_states, log_evidence

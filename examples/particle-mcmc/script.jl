@@ -1,12 +1,11 @@
 using AdvancedMH
 using CairoMakie
-using StatsBase: weights, mean
 
 include("particles.jl")
 include("resamplers.jl")
 include("simple-filters.jl")
 
-## FILTERING DEMONSTRATION #################################################################
+## DATA GENERATING PROCESS #################################################################
 
 # use a local level trend model
 function simulation_model(σx²::T, σy²::T) where {T<:Real}
@@ -17,47 +16,60 @@ function simulation_model(σx²::T, σy²::T) where {T<:Real}
 end
 
 # generate model and data
-rng = MersenneTwister(1234)
+rng = MersenneTwister(1234);
 true_params = randexp(rng, Float32, 2);
 true_model = simulation_model(true_params...);
 _, _, data = sample(rng, true_model, 150);
 
-# run a bootstrap filter, resampling at every iteration with a Rejection resampler
-filter = BF(1024; threshold=1.0, resampler=Rejection());
-sparse_ancestry = begin
-    M = floor(filter.N * log(filter.N))
-    states = initialise(rng, true_model, filter, nothing)
-    sparse_ancestry = ParticleTree(states.filtered, Int64(M))
+## FILTERING DEMONSTRATION #################################################################
 
-    for t in eachindex(data)
-        proposed_states = predict(rng, true_model, filter, t, states, nothing)
-        states, log_marginal = update(
-            true_model, filter, t, proposed_states, data[t], nothing
-        )
+filter = BF(1024; threshold=1.0, resampler=Systematic());
+sparse_ancestry = AncestorCallback(eltype(true_model.dyn), filter.N, 1.0);
+_, llbf = sample(rng, true_model, filter, data; callback=sparse_ancestry);
 
-        prune!(sparse_ancestry, get_offspring(states.ancestors))
-        insert!(sparse_ancestry, states.filtered, states.ancestors)
-    end
-
-    sparse_ancestry
-end;
-
-smoothed_trend = try
+begin
     fig = Figure(; size=(600, 400))
-    ax1 = Axis(fig[1, 1])
+    ax = Axis(fig[1, 1]; title="Surviving Lineage")
 
-    # this is gross but it works fro visualization purposes
-    all_paths = map(x -> hcat(x...), get_ancestry(sparse_ancestry))
+    # TODO: make the ancestry trace more palatable
+    all_paths = map(x -> hcat(x...), get_ancestry(sparse_ancestry.tree))
     n_paths = length(all_paths)
 
-    # plot ancestry tree in graded black and data in red
-    lines!.(ax1, getindex.(all_paths, 1, :), color=(:black, maximum([2 / n_paths, 1e-2])))
-    lines!(ax1, vcat(0, data...); color=:red, linestyle=:dash)
+    lines!.(ax, getindex.(all_paths, 1, :), color=(:black, maximum([2 / n_paths, 1e-2])))
+    lines!(ax, vcat(data...); color=:red, linestyle=:dash)
 
-    fig
-catch
-    # keep this here until the callbacks are in a stable enough 
-    @error "Sparse ancestry storage callbacks not yet implemented, this will error"
+    display(fig)
+end
+
+## COMPARING RESAMPLERS ####################################################################
+
+function plot_resampler(alg, model, data)
+    filter = BF(20; threshold=1.0, resampler=alg)
+    resampler_ancestry = ResamplerCallback(20)
+
+    rng = MersenneTwister(1234)
+    sample(rng, model, filter, data; callback=resampler_ancestry)
+
+    fig = Figure(; size=(600, 300))
+    ax = Axis(
+        fig[1, 1];
+        xticks=0:10:50,
+        yticks=0:5:20,
+        limits=(nothing, (-5, 25)),
+        title="$(typeof(alg))",
+    )
+
+    paths = get_ancestry(resampler_ancestry.tree)
+    scatterlines!.(
+        ax, paths, color=(:black, 0.25), markercolor=:black, markersize=5, linewidth=1
+    )
+
+    return fig
+end
+
+for rs in [Multinomial(), Systematic(), Metropolis(), Rejection()]
+    fig = plot_resampler(rs, true_model, data[1:50])
+    display(fig)
 end
 
 ## PARTICLE MCMC ###########################################################################
@@ -86,7 +98,7 @@ burn_in = 1_000;
 # plot the posteriors
 hist_plots = begin
     param_post = hcat(getproperty.(chains[burn_in:end], :params)...)
-    fig = Figure(; size=(1200, 400))
+    fig = Figure(; size=(800, 300))
 
     for i in 1:2
         # plot the posteriors with burn-in

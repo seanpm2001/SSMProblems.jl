@@ -134,3 +134,41 @@ function get_ancestry(tree::ParticleTree{T}) where {T}
     end
     return paths
 end
+
+## ANCESTOR STORAGE CALLBACK ###############################################################
+
+mutable struct AncestorCallback
+    tree::ParticleTree
+
+    function AncestorCallback(::Type{T}, N::Integer, C::Real=1.0) where {T}
+        M = floor(Int64, C * N * log(N))
+        nodes = Vector{T}(undef, N)
+        return new(ParticleTree(nodes, M))
+    end
+end
+
+function (c::AncestorCallback)(model, filter, step, states, data; kwargs...)
+    if step == 1
+        # this may be incorrect, but it is functional
+        @inbounds c.tree.states[1:(filter.N)] = deepcopy(states.filtered)
+    end
+    prune!(c.tree, get_offspring(states.ancestors))
+    insert!(c.tree, states.filtered, states.ancestors)
+end
+
+mutable struct ResamplerCallback
+    tree::ParticleTree
+
+    function ResamplerCallback(N::Integer, C::Real=1.0)
+        M = floor(Int64, C * N * log(N))
+        nodes = collect(1:N)
+        return new(ParticleTree(nodes, M))
+    end
+end
+
+function (c::ResamplerCallback)(model, filter, step, states, data; kwargs...)
+    if step != 1
+        prune!(c.tree, get_offspring(states.ancestors))
+        insert!(c.tree, collect(1:(filter.N)), states.ancestors)
+    end
+end

@@ -38,25 +38,12 @@ function resample(
     return a
 end
 
-function resample(
-    rng::AbstractRNG,
-    alg::Systematic,
-    weights::AbstractVector{Float32},
-    n::Int64=length(weights),
-)
-    try
-        return resample(rng, alg, weights, n)
-    catch e
-        throw(e("Systematic resampling is not numerically stable for single precision"))
-    end
-end
-
 ## SINGLE PRECISION STABLE ALGORITHMS ######################################################
 
-struct Metropolis{T<:Real} <: AbstractResampler
-    ε::T
-    function Metropolis(ε::T=0.01) where {T<:Real}
-        return new{T}(ε)
+struct Metropolis <: AbstractResampler
+    ε::Float64
+    function Metropolis(ε::Float64=0.01)
+        return new(ε)
     end
 end
 
