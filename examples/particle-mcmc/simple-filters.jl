@@ -26,42 +26,54 @@ end
 
 ## LINEAR GAUSSIAN STATE SPACE MODEL #######################################################
 
-struct LinearGaussianLatentDynamics{T<:Real} <: LatentDynamics{Vector{T}}
+struct LinearGaussianLatentDynamics{
+    T<:Real,AT<:AbstractMatrix{T},QT<:AbstractPDMat{T},ΣT<:AbstractPDMat{T}
+} <: LatentDynamics{Vector{T}}
     """
         Latent dynamics for a linear Gaussian state space model.
         The model is defined by the following equations:
         x[t] = Ax[t-1] + b + ε[t],      ε[t] ∼ N(0, Q)
     """
-    A::Matrix{T}
+    A::AT
     b::Vector{T}
-    Q::PDMat{T,Matrix{T}}
+    Q::QT
 
-    init::Gaussian{Vector{T},PDMat{T,Matrix{T}}}
+    init::Gaussian{Vector{T},ΣT}
 end
 
 # Convert covariance matrices to PDMats to avoid recomputing Cholesky factorizations
-function LinearGaussianLatentDynamics(A::Matrix, b::Vector, Q::Matrix, init::Gaussian)
-    return LinearGaussianLatentDynamics(A, b, PSDMat(Q), init)
+function LinearGaussianLatentDynamics(A::AbstractMatrix, b::Vector, Q::AbstractMatrix, init::Gaussian)
+    return LinearGaussianLatentDynamics(A, b, PDMat(Q), init)
+end
+
+function LinearGaussianLatentDynamics(A::AbstractMatrix, b::Vector, Q::AbstractVector, init::Gaussian)
+    return LinearGaussianLatentDynamics(A, b, PDiagMat(Q), init)
 end
 
 function LinearGaussianLatentDynamics(
-    A::Matrix{T}, Q::Matrix{T}, init::Gaussian
+    A::AbstractMatrix{T}, Q::AbstractArray{T}, init::Gaussian
 ) where {T<:Real}
-    return LinearGaussianLatentDynamics(A, zeros(T, size(A, 1)), PSDMat(Q), init)
+    return LinearGaussianLatentDynamics(A, zeros(T, size(A, 1)), Q, init)
 end
 
-struct LinearGaussianObservationProcess{T<:Real} <: ObservationProcess{Vector{T}}
+struct LinearGaussianObservationProcess{
+    T<:Real,HT<:AbstractMatrix{T},RT<:AbstractPDMat{T}
+} <: ObservationProcess{Vector{T}}
     """
         Observation process for a linear Gaussian state space model.
         The model is defined by the following equation:
         y[t] = Hx[t] + η[t],        η[t] ∼ N(0, R)
     """
-    H::Matrix{T}
-    R::PDMat{T,Matrix{T}}
+    H::HT
+    R::RT
 end
 
-function LinearGaussianObservationProcess(H::Matrix, R::Matrix)
-    return LinearGaussianObservationProcess(H, PSDMat(R))
+function LinearGaussianObservationProcess(H::AbstractMatrix, R::AbstractMatrix)
+    return LinearGaussianObservationProcess(H, PDMat(R))
+end
+
+function LinearGaussianObservationProcess(H::AbstractMatrix, R::AbstractVector)
+    return LinearGaussianObservationProcess(H, PDiagMat(R))
 end
 
 function SSMProblems.distribution(
