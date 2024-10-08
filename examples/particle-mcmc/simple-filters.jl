@@ -214,12 +214,17 @@ end
 resample_threshold(filter::BootstrapFilter) = filter.threshold * filter.N
 
 function initialise(
-    rng::AbstractRNG, model::StateSpaceModel, filter::BootstrapFilter, extra; kwargs...
+    rng::AbstractRNG,
+    model::StateSpaceModel,
+    filter::BootstrapFilter,
+    extra;
+    ref_state::Union{Nothing,AbstractVector}=nothing,
+    kwargs...,
 )
     initial_states = map(x -> SSMProblems.simulate(rng, model.dyn, extra), 1:(filter.N))
     initial_weights = zeros(eltype(model), filter.N)
 
-    return ParticleContainer(initial_states, initial_weights)
+    return update_ref!(ParticleContainer(initial_states, initial_weights), ref_state)
 end
 
 function resample(rng::AbstractRNG, states::ParticleContainer, filter::BootstrapFilter)
@@ -242,17 +247,18 @@ function predict(
     model::StateSpaceModel,
     filter::BootstrapFilter,
     step::Integer,
-    states::ParticleContainer,
+    states::ParticleContainer{T},
     extra;
+    ref_state::Union{Nothing,AbstractVector{T}}=nothing,
     kwargs...,
-)
+) where {T}
     states.ancestors = resample(rng, states, filter)
     states.proposed = map(
         x -> SSMProblems.simulate(rng, model.dyn, step, x, extra),
         states.filtered[states.ancestors],
     )
 
-    return states
+    return update_ref!(states, ref_state, step)
 end
 
 function update(

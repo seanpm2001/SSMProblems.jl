@@ -3,6 +3,26 @@ using Distributions
 
 abstract type AbstractResampler end
 
+## CATEGORICAL RESAMPLE ####################################################################
+
+# this is adapted from AdvancedPS
+function randcat(rng::AbstractRNG, weights::AbstractVector{WT}) where {WT<:Real}
+    # pre-calculations
+    @inbounds v = weights[1]
+    u = rand(rng, WT)
+
+    # initialize sampling algorithm
+    n = length(weights)
+    idx = 1
+
+    while (v ≤ u) && (idx < n)
+        idx += 1
+        v += weights[idx]
+    end
+
+    return idx
+end
+
 ## DOUBLE PRECISION STABLE ALGORITHMS ######################################################
 
 struct Multinomial <: AbstractResampler end
@@ -20,7 +40,7 @@ function resample(
 ) where {WT<:Real}
     # pre-calculations
     @inbounds v = n * weights[1]
-    u = oftype(v, rand(rng))
+    u = rand(rng, WT)
 
     # initialize sampling algorithm
     a = Vector{Int64}(undef, n)
@@ -66,7 +86,7 @@ function resample(
         for _ in 1:B
             j = rand(rng, 1:n)
             v = weights[j] / weights[k]
-            if rand(rng) ≤ v
+            if rand(rng, WT) ≤ v
                 k = j
             end
         end
@@ -93,7 +113,7 @@ function resample(
         u = rand(rng)
         while u > weights[j] / max_weight
             j = rand(rng, 1:n)
-            u = rand(rng)
+            u = rand(rng, WT)
         end
         a[i] = j
     end

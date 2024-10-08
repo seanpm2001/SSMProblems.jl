@@ -1,5 +1,6 @@
 using DataStructures: Stack
 using StatsBase
+using Random
 
 ## PARTICLES ###############################################################################
 
@@ -26,13 +27,23 @@ Base.keys(pc::ParticleContainer) = LinearIndices(pc.vals)
 Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Int) = pc.vals[i]
 Base.@propagate_inbounds Base.getindex(pc::ParticleContainer, i::Vector{Int}) = pc.vals[i]
 
+StatsBase.weights(pc::ParticleContainer) = softmax(pc.log_weights)
+
 function reset_weights!(pc::ParticleContainer{T,WT}) where {T,WT<:Real}
     fill!(pc.log_weights, zero(WT))
     return pc.log_weights
 end
 
-function StatsBase.weights(pc::ParticleContainer)
-    return softmax(pc.log_weights)
+function update_ref!(
+    pc::ParticleContainer{T}, ref_state::Union{Nothing,AbstractVector{T}}, step::Integer=0
+) where {T}
+    # this comes from Nicolas Chopin's package particles
+    if !isnothing(ref_state)
+        pc.proposed[1] = ref_state[step + 1]
+        pc.filtered[1] = ref_state[step + 1]
+        pc.ancestors[1] = 1
+    end
+    return pc
 end
 
 ## SPARSE PARTICLE STORAGE #################################################################
@@ -75,16 +86,17 @@ function prune!(tree::ParticleTree, offspring::Vector{Int64})
             end
         end
     end
+    return tree
 end
 
 function insert!(
-    tree::ParticleTree{T}, states::Vector{T}, a::AbstractVector{Int64}
+    tree::ParticleTree{T}, states::Vector{T}, ancestors::AbstractVector{Int64}
 ) where {T}
     # parents of new generation
-    parents = getindex(tree.leaves, a)
+    parents = getindex(tree.leaves, ancestors)
 
     # ensure there are enough dead branches
-    if (length(tree.free_indices) < length(a))
+    if (length(tree.free_indices) < length(ancestors))
         @debug "expanding tree"
         expand!(tree)
     end
@@ -133,6 +145,22 @@ function get_ancestry(tree::ParticleTree{T}) where {T}
         paths[k] = reverse(xs)
     end
     return paths
+end
+
+# this could be improved for sure...
+function Random.rand(rng::AbstractRNG, tree::ParticleTree, weights::AbstractVector{<:Real})
+    b = randcat(rng, weights)
+    leaf = tree.leaves[b]
+
+    j = tree.parents[leaf]
+    xi = tree.states[leaf]
+
+    xs = [xi]
+    while j > 0
+        push!(xs, tree.states[j])
+        j = tree.parents[j]
+    end
+    return reverse(xs)
 end
 
 ## ANCESTOR STORAGE CALLBACK ###############################################################
