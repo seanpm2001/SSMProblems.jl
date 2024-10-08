@@ -42,11 +42,15 @@ struct LinearGaussianLatentDynamics{
 end
 
 # Convert covariance matrices to PDMats to avoid recomputing Cholesky factorizations
-function LinearGaussianLatentDynamics(A::AbstractMatrix, b::Vector, Q::AbstractMatrix, init::Gaussian)
+function LinearGaussianLatentDynamics(
+    A::AbstractMatrix, b::Vector, Q::AbstractMatrix, init::Gaussian
+)
     return LinearGaussianLatentDynamics(A, b, PDMat(Q), init)
 end
 
-function LinearGaussianLatentDynamics(A::AbstractMatrix, b::Vector, Q::AbstractVector, init::Gaussian)
+function LinearGaussianLatentDynamics(
+    A::AbstractMatrix, b::Vector, Q::AbstractVector, init::Gaussian
+)
     return LinearGaussianLatentDynamics(A, b, PDiagMat(Q), init)
 end
 
