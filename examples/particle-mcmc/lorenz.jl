@@ -16,7 +16,7 @@ Base.@kwdef struct Parameters{T<:Real}
 	β::T = 8/3
 	ρ::T = 28.
 	σ::T = 10.
-	ν::T = 0.25 # Obs noise variance
+	ν::T = 1. # Obs noise variance
 	dt::T = 0.025 # Time step
 end
 
@@ -57,7 +57,8 @@ u0 = [1.0; 0.0; 0.0]
 params = Parameters()
 
 dt = 0.025
-N = 50
+N = 100
+Np = 512
 tspan = (0.0, dt * N)
 
 rng = MersenneTwister()
@@ -68,22 +69,27 @@ integrator = init(prob, Tsit5(); dt=dt, adaptive=false)
 sol = solve(prob, alg; dt=dt, adaptive=false)
 
 # SSM Noise Model
-dyn = LatentNoiseProcess(ScalMat(3, params.dt / 100), params.dt, integrator)
+dyn = LatentNoiseProcess(ScalMat(3, params.dt), params.dt, integrator)
 obs = ObservationNoiseProcess(ScalMat(3, params.ν))
 model = StateSpaceModel(dyn, obs)
 x0, x, y = sample(rng, model, N)
 
-filter = BF(10; threshold=1.0, resampler=Systematic());
+filter = BF(Np; threshold=1.0, resampler=Systematic());
 sparse_ancestry = AncestorCallback(eltype(model.dyn), filter.N, 1.0);
 tree, llbf = sample(rng, model, filter, y; callback=sparse_ancestry);
 lineage = get_ancestry(sparse_ancestry.tree)
-
  
+# Fancy 3D plot
+# fig = Figure()
+# lines(fig[1, 1], hcat(x0, x...))
+# for (i, path) in enumerate(lineage)
+# 	lines!(fig[1, 1], hcat(path...), color=:black)
+# end
+
 fig = Figure()
 for i in eachindex(first(x))
-	lines(fig[i, 1], hcat(x0, x...)[i, :], label="True trajectory")
-
-	mean_traj = mean(map(x -> hcat(x...)[i, :], lineage)) 
-	lines!(fig[i, 1], mean_traj, label="Sampled path")
+	lines(fig[i, 1], hcat(x0, x...)[i, :])
+	for path in lineage
+		lines!(fig[i, 1], hcat(path...)[i, :], color=:black, alpha=0.1)
+	end
 end
-fig
