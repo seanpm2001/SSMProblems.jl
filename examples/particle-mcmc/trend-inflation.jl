@@ -133,4 +133,4 @@ rng = MersenneTwister(1234);
 
 # plot both models side by side, notice the difference in volatility
 plot_ucsv(rng, UCSV(0.2), fred.data.value);
-plot_ucsv(rng, UCSVO(0.2, 0.1), fred.data.value);
+plot_ucsv(rng, UCSVO(0.1, 0.05), fred.data.value);
