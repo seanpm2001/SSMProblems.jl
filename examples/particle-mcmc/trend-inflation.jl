@@ -37,7 +37,7 @@ function SSMProblems.simulate(
     new_state = deepcopy(state)
     new_state[2:3] += proc.γ .* randn(rng, T, 2)
     new_state[1] += 0.5 * exp(new_state[2]) * randn(T)
-    new_state[4] = rand(rng, proc.switch_dist) ? one(T) : rand(rng, proc.outlier_dist)
+    new_state[4] = rand(rng, proc.switch_dist) ? rand(rng, proc.outlier_dist) : one(T)
     return new_state
 end
 
